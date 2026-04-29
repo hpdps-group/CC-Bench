@@ -1,0 +1,40 @@
+{
+  /*
+    通信库接入选择（Communication Library Selection）
+
+    mode 0 — bare
+      无压缩 baseline，直接测裸通信性能。
+      不需要任何字段。
+
+    mode 1 — direct-lib
+      用户提供预编译 .so。
+      需要: library_paths
+
+    mode 2 — lib+wrapper
+      用户提供预编译 .so + wrapper 源码一起编译。
+      需要: library_paths, source_{files,dirs}, include_{files,dirs}
+
+    mode 3 — pure code wrapper
+      用户提供源码 + wrapper 源码，全部编译为 .so。
+      需要: source_{files,dirs}, include_{files,dirs}
+
+    === 示例 ===
+    wrapper_code_examples/communication/plain_mpi_compress/ 下:
+   用户自定义实现请放在 your_wrapper_code/communication/ 下。
+  */
+  "mode": 3,
+
+  "library_paths": ["/path/to/libfoo.so"],
+
+  "source_files": ["/public/home/konnyaku_cstdio/mybench/run_codes/wrappers/mpi_compress_tools.c"],
+
+  "source_dirs": ["/public/home/konnyaku_cstdio/mybench/userconfig/wrapper_code_examples/communication/plain_mpi_compress"],
+
+  "include_files": [],
+
+  "include_dirs": [],
+
+  "libraries": [],
+
+  "output_name": "libtest_plainmpi.so"
+}

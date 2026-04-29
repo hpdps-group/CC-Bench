@@ -1,0 +1,40 @@
+{
+  /*
+    压缩内核接入选择（Compression Kernel Selection）
+
+    mode 0 — bare
+      无压缩 baseline，直接测裸性能。
+      不需要任何字段。
+
+    mode 1 — direct-lib
+      用户提供预编译 .so。
+      需要: library_paths
+
+    mode 2 — lib+wrapper
+      用户提供预编译 .so + wrapper 源码一起编译。
+      需要: library_paths, source_{files,dirs}, include_{files,dirs}
+
+    mode 3 — pure code wrapper
+      用户提供源码 + wrapper 源码，全部编译为 .so。
+      需要: source_{files,dirs}, include_{files,dirs}
+
+    === 示例 ===
+    wrapper_code_examples/compression/sz3/ 下（sz3 mode 1 示例）:
+   用户自定义实现请放在 your_wrapper_code/compression/ 下。
+  */
+  "mode": 2,
+
+  "library_paths": ["/public/home/konnyaku_cstdio/mybench/plugin_projects/compression/SZ3/install/lib64/libSZ3c.so"],
+
+  "source_files": ["/public/home/konnyaku_cstdio/mybench/run_codes/wrappers/mpi_compress_tools.c"],
+
+  "source_dirs": ["/public/home/konnyaku_cstdio/mybench/userconfig/wrapper_code_examples/compression/sz3"],
+
+  "include_files": [],
+
+  "include_dirs": [],
+
+  "libraries": [],
+
+  "output_name": "libtest_sz3.so"
+}

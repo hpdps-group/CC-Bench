@@ -1,0 +1,16 @@
+{
+  /*
+    误差度量（Deviation Metrics）配置
+    用于 benchmark 验证阶段：对比压缩-解压后数据与原始数据，计算误差。
+
+    可选 metrics（取自定义 metric 文件的文件名，逗号分隔）:
+      mse, mae, psnr, ssim
+
+    用户自定义 metric 请放入 userconfig/your_deviation_metrics/，
+    register_metrics.sh 会自动扫描注册。
+  */
+  "validation": {
+    "enabled": true,
+    "selected_metrics": "mse, mae, psnr"
+  }
+}

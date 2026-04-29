@@ -1,0 +1,59 @@
+{
+  /*
+    ===== 基础配置 =====
+
+    benchmark_type:  benchmark 类型
+      "mpi_allreduce"   — MPI AllReduce (CPU/GPU + MPI)
+      "nccl_allreduce"  — NCCL AllReduce (NVIDIA GPU only)
+      "mpi_sendrecv"    — MPI point-to-point (send/recv)
+      "mpi_bcast"       — MPI Broadcast
+
+    communication_arch: 通信架构
+      "mpi"   — MPI-based communication
+      "nccl"  — NCCL-based communication (NVIDIA)
+      "rccl"  — RCCL-based communication (AMD)
+
+    data_source: 数据源配置
+      type: "pattern" — 使用生成的 pattern 数据
+            "file"    — 从文件加载真实数据
+      pattern_type: "plain" / "rank_linear" / "rank_product" / "sequential"
+
+    message_sizes: 消息大小范围
+      min/max — 字节数
+      increment_type: "multiply" — 每次乘以 increment 值（如 *=2）
+                      "add"      — 每次加上 increment 值
+  */
+  "benchmark_type": "mpi_allreduce",
+  "communication_arch": "mpi",
+
+  "data_source": {
+    "type": "pattern",
+    "file_path": "/path/to/data/file.dat",
+    "pattern_type": "rank_linear",
+    "file_format": "binary"
+  },
+
+  "mpi_operation": {
+    "type": "allreduce",
+    "datatype": "MPI_DOUBLE",
+    "operation": "MPI_SUM"
+  },
+
+  "iterations": {
+    "performance": {
+      "warmup": 10,
+      "measurement": 100
+    },
+    "perf_round": {
+      "warmup": 10,
+      "measurement": 10
+    }
+  },
+
+  "message_sizes": {
+    "min": 1024,
+    "max": 65536,
+    "increment": 2,
+    "increment_type": "multiply"
+  }
+}

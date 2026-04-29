@@ -1,0 +1,20 @@
+{
+  /*
+    性能监控 Daemon 配置
+    在 benchmark 运行时后台采集系统性能数据（CPU/GPU/网络等）。
+
+    可用 daemon（来自 userconfig/daemon_code_examples/）:
+      cpu       — 逐核 CPU 利用率 + 内存利用率
+      gpu_nvidia — NVIDIA GPU 利用率、显存、温度、PCIe 状态（依赖 nvidia-smi）
+      ib        — InfiniBand 网络带宽统计
+      pcie      — PCIe 链路状态监控
+
+    用户自定义 daemon 请放入 userconfig/your_daemons/，
+    脚本会自动扫描编译。
+  */
+  "performance": {
+    "enabled": true,
+    "selected_daemons": "cpu, ib, pcie",
+    "poll_interval_sec": 1.0
+  }
+}

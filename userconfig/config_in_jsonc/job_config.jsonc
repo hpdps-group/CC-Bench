@@ -1,0 +1,32 @@
+{
+  /*
+    作业调度配置
+    job_choice: "slurm" — 通过 SLURM 提交作业
+                "raw"   — 直接 mpirun，无需调度器
+
+    slurm.job:       SLURM SBATCH 参数（仅 job_choice="slurm" 时生效）
+    slurm.resources: 硬件资源申请（仅 job_choice="slurm" 时生效）
+  */
+  "job_choice": "slurm",
+
+  "slurm": {
+    "job": {
+      "name": "communication-bench",
+      "output": "%x-%j.out",
+      "error": "%x-%j.err",
+      "time": "01:00:00",
+      "partition": "sdicnormal",
+      "qos": "normal",
+ /*     "account": "sdicnormal" */
+    },
+    "resources": {
+      "nodes": 4,
+      "tasks_per_node": 8,
+/*      "cpus_per_task": 8,
+      "gpus_per_node": 4,
+      "gpu_type": "a100",
+      "memory_gb": 64,   
+      "exclusive": true  */
+    }
+  }
+}

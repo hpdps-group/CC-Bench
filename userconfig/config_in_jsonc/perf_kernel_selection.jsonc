@@ -1,0 +1,48 @@
+{
+  /*
+    性能监控 Wrapper 接入选择（Performance Kernel Selection）
+
+    选用 LD_PRELOAD wrapper 拦截 MPI/压缩函数并记录性能数据。
+
+    mode 0 — bare
+      无 profiling，不加载任何 perf wrapper。
+
+    mode 1 — direct-lib
+      用户提供预编译的 profiling .so。
+      需要: library_paths
+
+    mode 2 — lib+wrapper
+      用户提供预编译 .so + wrapper 源码一起编译。
+      需要: library_paths, source_{files,dirs}, include_{files,dirs}
+
+    mode 3 — pure code wrapper
+      用户提供源码，编译为 profiling .so。
+      需要: source_{files,dirs}, include_{files,dirs}
+
+    === 示例 ===
+    wrapper_code_examples/perf/perfmpi/perfmpi.c — 拦截 MPI_Send / mpi_compress /
+    mpi_decompress 并记录耗时。编译时需要带上框架的 perf_helper 模块：
+      source_files: ["run_codes/wrappers/src/perf_helper.c",
+                     "wrapper_code_examples/perf/perfmpi/perfmpi.c"]
+      include_files: ["run_codes/wrappers/include/perf_helper.h"]
+
+   用户自定义实现请放在 your_wrapper_code/perf/ 下。
+  */
+  "mode": 3,
+
+  "library_paths": ["/path/to/libperf.so"],
+
+  "source_files": ["/public/home/konnyaku_cstdio/mybench/run_codes/wrappers/src/perf_helper.c",
+                  "/public/home/konnyaku_cstdio/mybench/run_codes/wrappers/src/mpi/perf_helper_mpi.c",
+                  "/public/home/konnyaku_cstdio/mybench/userconfig/wrapper_code_examples/perf/perfmpi/perfmpi.c"],
+
+  "source_dirs": [],
+
+  "include_files": ["/public/home/konnyaku_cstdio/mybench/run_codes/wrappers/include/perf_helper.h"],
+
+  "include_dirs": [],
+
+  "libraries": [],
+
+  "output_name": "libtest_perf.so"
+}

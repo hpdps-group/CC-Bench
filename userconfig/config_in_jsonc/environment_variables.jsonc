@@ -1,0 +1,34 @@
+{
+  /*
+    运行时环境变量配置
+    这些变量会被注入到作业脚本（SLURM）或 mpirun 环境中，
+    供 benchmark 程序和 wrapper 代码通过 getenv() 读取。
+
+    注意：
+    - 所有运行时环境变量都统一放在这里，包括 wrapper 代码需要的变量。
+    - 架构选择（mpi/nccl/rccl）等编译期选项请放在 bench_basic_config.jsonc 中。
+  */
+
+  /* 通信库/运行时环境变量 */
+  /*
+  "NCCL_DEBUG": "INFO",
+  "NCCL_SOCKET_IFNAME": "eth0",
+  "CUDA_VISIBLE_DEVICES": "0,1,2,3",
+  "OMP_NUM_THREADS": "8",
+  */
+
+  /* Wrapper 通用环境变量 */
+  "MPI_TOLERANCE": "1e-5",
+  "MPI_BLOCK_SIZE": "1024",
+
+  /* UCX / InfiniBand 传输配置 */
+  "UCX_TLS": "rc,self,sm",
+  "UCX_NET_DEVICES": "mlx5_0:1"
+
+  /* Wrapper 环境变量 — 按需写 */
+  /* "SZ3_ABS_EB": "1e-6",
+   "SZ3_TYPE": "0",
+   "MPI_SZ3_LIB_PATH": "",
+   "MPI_ZFP_TOLERANCE": "1e-3",
+   "DIETGPU_DEVICE_ID": "0" */
+}
