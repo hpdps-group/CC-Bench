@@ -3,10 +3,34 @@
 #include <math.h>
 #include <stdlib.h>
 
+double compute_cos_sim(const void *buf1, const void *buf2, int count, data_type_t dtype);
 double compute_mae(const void *buf1, const void *buf2, int count, data_type_t dtype);
 double compute_mse(const void *buf1, const void *buf2, int count, data_type_t dtype);
 double compute_psnr(const void *buf1, const void *buf2, int count, data_type_t dtype);
+double compute_relative_err(const void *buf1, const void *buf2, int count, data_type_t dtype);
 double compute_ssim(const void *buf1, const void *buf2, int count, data_type_t dtype);
+
+/* ----- from userconfig/deviation_metric_examples/cos_sim.c ----- */
+/* Cosine Similarity: dot(buf1, buf2) / (||buf1|| * ||buf2||).
+ * Returns 1.0 when both norms are zero (identical zero vectors).
+ * Returns 0.0 when exactly one norm is zero (no similarity).
+ */
+double compute_cos_sim(const void *buf1, const void *buf2, int count, data_type_t dtype) {
+    if (count <= 0) return 0.0;
+
+    double dot = 0.0, norm1 = 0.0, norm2 = 0.0;
+    for (int i = 0; i < count; i++) {
+        double a = to_double(buf1, dtype, i);
+        double b = to_double(buf2, dtype, i);
+        dot  += a * b;
+        norm1 += a * a;
+        norm2 += b * b;
+    }
+
+    if (norm1 == 0.0 && norm2 == 0.0) return 1.0;
+    if (norm1 == 0.0 || norm2 == 0.0) return 0.0;
+    return dot / (sqrt(norm1) * sqrt(norm2));
+}
 
 /* ----- from userconfig/deviation_metric_examples/mae.c ----- */
 /* Mean Absolute Error */
@@ -61,6 +85,30 @@ double compute_psnr(const void *buf1, const void *buf2, int count, data_type_t d
     }
     return 20.0 * log10(max_val) - 10.0 * log10(mse);
 }
+/* ----- from userconfig/deviation_metric_examples/relative_err.c ----- */
+/* Element-wise Relative Error: |ref - comp| / max(|ref|, eps).
+ * buf1 = user (compressed), buf2 = reference (original).
+ * Extra env vars:
+ *   METRIC_RELATIVE_ERR_EPS — denominator floor to avoid division by zero (default: 1e-8)
+ */
+double compute_relative_err(const void *buf1, const void *buf2, int count, data_type_t dtype) {
+    if (count <= 0) return 0.0;
+
+    double eps = 1e-8;
+    const char *e = getenv("METRIC_RELATIVE_ERR_EPS");
+    if (e) eps = atof(e);
+
+    double sum = 0.0;
+    for (int i = 0; i < count; i++) {
+        double a = to_double(buf1, dtype, i);
+        double b = to_double(buf2, dtype, i);
+        double denom = fabs(b);
+        if (denom < eps) denom = eps;
+        sum += fabs(a - b) / denom;
+    }
+    return sum / count;
+}
+
 /* ----- from userconfig/deviation_metric_examples/ssim.c ----- */
 /* Structural Similarity (1D simplified).
  * Extra env vars:
@@ -104,9 +152,11 @@ double compute_ssim(const void *buf1, const void *buf2, int count, data_type_t d
 }
 /* Registry */
 metric_entry_t g_metric_registry[] = {
+    {"cos_sim", compute_cos_sim},
     {"mae", compute_mae},
     {"mse", compute_mse},
     {"psnr", compute_psnr},
+    {"relative_err", compute_relative_err},
     {"ssim", compute_ssim},
 };
 int g_metric_registry_count = sizeof(g_metric_registry) / sizeof(g_metric_registry[0]);

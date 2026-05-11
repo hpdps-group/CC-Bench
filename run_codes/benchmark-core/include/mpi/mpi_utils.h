@@ -59,4 +59,25 @@ void mpi_report_results(const mpi_test_context_t *ctx, size_t msg_size, int coun
                         double total_time_user, int local_errors,
                         const validation_result_t *metrics);
 
+/**
+ * Parse a comma-separated integer array from an environment variable.
+ * Returns a malloc'd array (caller must free) and sets *out_len.
+ * Returns NULL if env var is not set (caller handles fallback).
+ * If expected_len > 0 and parsed length doesn't match, prints error and aborts.
+ */
+int *parse_env_int_array(const char *env_name, int expected_len, int *out_len);
+
+/**
+ * CSV output utility.
+ * Only rank 0 writes. If header is provided and the file does not exist,
+ * the header line is written first. Each fmt call appends one data line.
+ */
+void mpi_csv_write(const char *path, const char *header, const char *fmt, ...);
+
+/*
+ * size_iter_t moved to utils.h (no MPI dependency) — keep the include
+ * so existing MPI code still picks up the declarations.
+ */
+#include "utils.h"
+
 #endif /* MPI_UTILS_H */

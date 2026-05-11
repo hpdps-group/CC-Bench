@@ -600,3 +600,87 @@ int MPI_Reduce_scatter(const void *sendbuf, void *recvbuf,
     free(full);
     return MPI_SUCCESS;
 }
+
+/* ---- MPI_Allgatherv (sequential broadcast, variable sizes) ---- */
+
+int MPI_Allgatherv(const void *sendbuf, int sendcount, MPI_Datatype sendtype,
+                   void *recvbuf, const int *recvcounts, const int *displs,
+                   MPI_Datatype recvtype, MPI_Comm comm)
+{
+    int rank, size;
+    PMPI_Comm_rank(comm, &rank);
+    PMPI_Comm_size(comm, &size);
+
+    size_t snd_sz = (size_t)sendcount * type_size(sendtype);
+    size_t rcv_esz = type_size(recvtype);
+
+    if (size == 1) {
+        if (sendbuf != MPI_IN_PLACE)
+            memcpy(recvbuf, sendbuf, (size_t)sendcount * rcv_esz);
+        return MPI_SUCCESS;
+    }
+
+    /* Place local data */
+    memcpy((char*)recvbuf + (size_t)displs[rank] * rcv_esz,
+           sendbuf, snd_sz);
+
+    /* Sequential broadcast of each rank's chunk */
+    for (int root = 0; root < size; root++) {
+        size_t root_sz = (size_t)recvcounts[root] * rcv_esz;
+        if (root_sz == 0) continue;
+
+        if (rank == root) {
+            for (int p = 0; p < size; p++) {
+                if (p == root) continue;
+                send_compressed((const char*)recvbuf + (size_t)displs[root] * rcv_esz,
+                                root_sz, p, TAG_ALLGATHERV, comm);
+            }
+        } else {
+            recv_decompress((char*)recvbuf + (size_t)displs[root] * rcv_esz,
+                            root_sz, root, TAG_ALLGATHERV, comm);
+        }
+    }
+
+    flush_pending();
+    return MPI_SUCCESS;
+}
+
+/* ---- MPI_Scatterv (linear root -> all, variable sizes) ---- */
+
+int MPI_Scatterv(const void *sendbuf, const int *sendcounts, const int *displs,
+                 MPI_Datatype sendtype, void *recvbuf, int recvcount,
+                 MPI_Datatype recvtype, int root, MPI_Comm comm)
+{
+    int rank, size;
+    PMPI_Comm_rank(comm, &rank);
+    PMPI_Comm_size(comm, &size);
+
+    size_t rcv_sz = (size_t)recvcount * type_size(recvtype);
+    size_t snd_esz = type_size(sendtype);
+
+    if (size == 1) {
+        if (rank == root && sendbuf != MPI_IN_PLACE)
+            memcpy(recvbuf, sendbuf, rcv_sz);
+        return MPI_SUCCESS;
+    }
+
+    if (rank == root) {
+        /* Root's own chunk */
+        memcpy(recvbuf, (const char*)sendbuf + (size_t)displs[root] * snd_esz,
+               rcv_sz);
+
+        /* Send each non-root rank its chunk */
+        for (int i = 0; i < size; i++) {
+            if (i == root) continue;
+            size_t peer_sz = (size_t)sendcounts[i] * snd_esz;
+            if (peer_sz == 0) continue;
+            send_compressed((const char*)sendbuf + (size_t)displs[i] * snd_esz,
+                            peer_sz, i, TAG_SCATTERV, comm);
+        }
+    } else {
+        recv_decompress(recvbuf, rcv_sz, root, TAG_SCATTERV, comm);
+    }
+
+    flush_pending();
+    return MPI_SUCCESS;
+}

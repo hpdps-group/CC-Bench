@@ -1,9 +1,11 @@
 #!/bin/bash
 # build_script.sh -- generate a benchmark workflow script from JSONC configs
 #
-# Usage: ./scripts/build_script.sh
-#   -> scripts/run/run_benchmark.sh   (local mpirun)
-#   -> scripts/run/run_benchmark.slurm (SLURM sbatch)
+# Usage: ./scripts/build_script.sh [--rebuild-bench]
+#   --rebuild-bench   Recompile benchmark binaries before generating the run script
+#   -> scripts/run/run_benchmark.slurm   (sbatch)
+#   -> scripts/run/run_benchmark.srun.sh (salloc terminal)
+#   -> scripts/run/run_benchmark.sh      (local single-node)
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -11,6 +13,15 @@ cd "$(dirname "$0")/.."
 CONFIG_DIR="userconfig/config_in_jsonc"
 OUTPUT_DIR="scripts/run"
 mkdir -p "$OUTPUT_DIR"
+
+# Parse flags
+REBUILD_BENCH=false
+for arg in "$@"; do
+    case "$arg" in
+        --rebuild-bench) REBUILD_BENCH=true ;;
+        *) echo "Unknown option: $arg (valid: --rebuild-bench)"; exit 1 ;;
+    esac
+done
 
 # Detect Python 2.7+ or 3
 PYTHON=""
@@ -92,16 +103,44 @@ emit('DS_TYPE', cfg['basic']['data_source']['type'])
 emit('DS_FILE', cfg['basic']['data_source']['file_path'])
 emit('DS_PATTERN', cfg['basic']['data_source']['pattern_type'])
 emit('DS_FORMAT', cfg['basic']['data_source']['file_format'])
-emit('MSG_MIN', cfg['basic']['message_sizes']['min'])
-emit('MSG_MAX', cfg['basic']['message_sizes']['max'])
-emit('MSG_INCR', cfg['basic']['message_sizes']['increment'])
+
+oc = cfg['basic']['data_source'].get('offset_config', {})
+emit('DS_BASE_OFFSET', oc.get('base_offset', 0))
+emit('DS_PER_RANK_OFFSET', oc.get('per_rank_offset', True))
+custom = oc.get('custom_offsets', [])
+emit('DS_CUSTOM_OFFSETS', ','.join(str(x) for x in custom) if custom else '')
+ms = cfg['basic']['message_sizes']
+mode = ms.get('mode', 'range')
+if mode == 'list':
+    msg_list = ms.get('list', [])
+    emit('MSG_MODE', 'list')
+    emit('MSG_LIST', ','.join(str(x) for x in msg_list) if msg_list else '')
+    emit('MSG_MIN', '0')
+    emit('MSG_MAX', '0')
+    emit('MSG_INCR', '0')
+else:
+    emit('MSG_MODE', 'range')
+    emit('MSG_LIST', '')
+    emit('MSG_MIN', ms['min'])
+    emit('MSG_MAX', ms['max'])
+    emit('MSG_INCR', ms['increment'])
+emit('DATATYPE', cfg['basic']['mpi_operation']['datatype'].replace('MPI_', '').lower())
 
 emit('VAL_ENABLED', cfg['deviation']['validation']['enabled'])
 emit('VAL_METRICS', cfg['deviation']['validation']['selected_metrics'])
 
+out = cfg['basic'].get('output', {})
+emit('OUTPUT_CSV', out.get('csv', False))
+emit('OUTPUT_PATH', out.get('csv_path', ''))
+emit('OUTPUT_BINARY', out.get('binary', False))
+emit('OUTPUT_BIN_PATH', out.get('bin_path', ''))
+
 emit('DAEMON_ENABLED', cfg['daemon']['performance']['enabled'])
 emit('DAEMON_LIST', cfg['daemon']['performance']['selected_daemons'])
 emit('DAEMON_INTERVAL', cfg['daemon']['performance']['poll_interval_sec'])
+
+stress = cfg['daemon'].get('stress', {})
+emit('STRESS_CPU_PERCENT', stress.get('cpu_percent', 50))
 
 for pair in [('COMM','comm'), ('COMP','comp'), ('PERF','perf')]:
     key = pair[0]
@@ -111,9 +150,14 @@ for pair in [('COMM','comm'), ('COMP','comp'), ('PERF','perf')]:
     emit(key + '_LIBPATHS', json.dumps(c.get('library_paths', []), ensure_ascii=True))
     emit(key + '_OUTPUT', c.get('output_name', ''))
 
-# Collect all library directories for LD_LIBRARY_PATH
+# Collect library directories for LD_LIBRARY_PATH.
+# Mode 1 (direct prebuilt): library_paths are final .so files that go into
+# LD_PRELOAD, so their directories should NOT be added to LD_LIBRARY_PATH.
 all_lib_dirs = set()
 for ckey in ['comm', 'comp', 'perf']:
+    m = cfg[ckey].get('mode', 0)
+    if m == 0 or m == 1:
+        continue   # mode 0: bare (no paths needed) ; mode 1: LD_PRELOAD only
     for p in cfg[ckey].get('library_paths', []):
         d = os.path.dirname(p)
         if d:
@@ -150,6 +194,20 @@ echo "[build_script] Wrapper libraries done"
 echo ""
 
 # ============================================================
+# Rebuild benchmark binaries (if --rebuild-bench was passed)
+# ============================================================
+if [ "$REBUILD_BENCH" = "true" ]; then
+    echo "[build_script] Rebuilding benchmarks for arch=$ARCH..."
+    if [ -x "scripts/intermediate/build_tests.sh" ]; then
+        "scripts/intermediate/build_tests.sh" "$ARCH"
+        echo "[build_script] Benchmark rebuild done"
+    else
+        echo "[build_script] WARNING: scripts/intermediate/build_tests.sh not found"
+    fi
+    echo ""
+fi
+
+# ============================================================
 # Derived values
 # ============================================================
 
@@ -164,9 +222,30 @@ esac
 NPROCS=$(( SLURM_NODES * SLURM_TASKS_PER_NODE ))
 
 case "$JOB_CHOICE" in
-    slurm) OUTPUT_SCRIPT="$OUTPUT_DIR/run_benchmark.slurm" ;;
-    raw)   OUTPUT_SCRIPT="$OUTPUT_DIR/run_benchmark.sh"    ;;
+    slurm) OUTPUT_SCRIPT="$OUTPUT_DIR/run_benchmark.slurm"  ;;
+    srun)  OUTPUT_SCRIPT="$OUTPUT_DIR/run_benchmark.srun.sh" ;;
+    local) OUTPUT_SCRIPT="$OUTPUT_DIR/run_benchmark.sh"      ;;
 esac
+
+# ── Launcher detection ──────────────────────────────────
+# MPI arch always uses mpirun (needs the MPI runtime).
+# Non-MPI arch: prefer srun, fallback to mpirun, or error.
+if [ "$ARCH" = "mpi" ]; then
+    LAUNCH_CMD="mpirun -np $NPROCS"
+    if [ "$JOB_CHOICE" = "srun" ]; then
+        LAUNCH_CMD="mpirun -np $NPROCS --hostfile \$LSF_HOSTFILE --map-by node"
+    fi
+elif command -v srun &>/dev/null; then
+    LAUNCH_CMD="srun --nodes=$SLURM_NODES --ntasks=$NPROCS --ntasks-per-node=$SLURM_TASKS_PER_NODE"
+elif command -v mpirun &>/dev/null; then
+    LAUNCH_CMD="mpirun -np $NPROCS"
+    if [ "$JOB_CHOICE" = "srun" ]; then
+        LAUNCH_CMD="mpirun -np $NPROCS --hostfile \$LSF_HOSTFILE --map-by node"
+    fi
+else
+    echo "Error: no launcher found for ARCH=$ARCH (need srun or mpirun)" >&2
+    exit 1
+fi
 
 echo "[build_script] generating: $OUTPUT_SCRIPT"
 
@@ -221,10 +300,22 @@ write_line ""
 write_line '# Clean up previous perf data'
 write_line 'echo "[bench] Cleaning perf_files/ ..."'
 write_line 'rm -rf "${BENCH_DIR}/perf_files" && mkdir -p "${BENCH_DIR}/perf_files"'
+write_line ""
+write_line '# NCCL unique-id file'
+write_line 'mkdir -p "${BENCH_DIR}/nccl_id_file"'
+write_line 'rm -f "${BENCH_DIR}/nccl_id_file/nccl_bench_id"'
+write_line ""
+if [ "$OUTPUT_CSV" = "true" ] && [ -n "$OUTPUT_PATH" ]; then
+    write_line "# Clean up previous CSV output"
+    write_line "rm -f \"\${BENCH_DIR}/$OUTPUT_PATH\""
+    write_line 'echo "[bench] Cleaning previous CSV output..."'
+fi
 write_line 'echo ""'
 write_line ''
 write_line '# Ensure signal file directory exists'
 write_line 'mkdir -p "${BENCH_DIR}/daemon_signals"'
+write_line 'echo "[bench]   cleaning old daemon signal files..."'
+write_line 'rm -f "${BENCH_DIR}"/daemon_signals/*.signal'
 write_line 'echo ""'
 write_line ""
 
@@ -241,16 +332,29 @@ write_line ""
 write_line "DS_TYPE=\"$DS_TYPE\""
 write_line "DS_FILE=\"$DS_FILE\""
 write_line "DS_PATTERN=\"$DS_PATTERN\""
+write_line "DS_BASE_OFFSET=$DS_BASE_OFFSET"
+write_line "DS_PER_RANK_OFFSET=$DS_PER_RANK_OFFSET"
+write_line "DS_CUSTOM_OFFSETS=\"$DS_CUSTOM_OFFSETS\""
+write_line 'export DS_BASE_OFFSET DS_PER_RANK_OFFSET DS_CUSTOM_OFFSETS'
+write_line "MSG_MODE=\"$MSG_MODE\""
+write_line "MSG_LIST=\"$MSG_LIST\""
 write_line "MSG_MIN=$MSG_MIN"
 write_line "MSG_MAX=$MSG_MAX"
 write_line "MSG_INCR=$MSG_INCR"
+write_line "DATATYPE=\"$DATATYPE\""
 write_line ""
 write_line "VAL_ENABLED=$VAL_ENABLED"
 write_line "VAL_METRICS=\"$VAL_METRICS\""
 write_line ""
+write_line "OUTPUT_CSV=$OUTPUT_CSV"
+write_line "OUTPUT_PATH=\"$OUTPUT_PATH\""
+write_line ""
 write_line "DAEMON_ENABLED=$DAEMON_ENABLED"
 write_line "DAEMON_LIST=\"$DAEMON_LIST\""
 write_line "DAEMON_INTERVAL=$DAEMON_INTERVAL"
+write_line ""
+write_line "STRESS_CPU_PERCENT=${STRESS_CPU_PERCENT:-$STRESS_CPU_PERCENT}"
+write_line 'export STRESS_CPU_PERCENT'
 write_line ""
 write_line "PHASE1_WARMUP=$PHASE1_WARMUP"
 write_line "PHASE1_MEASURE=$PHASE1_MEASURE"
@@ -268,6 +372,22 @@ write_line "# Prepend library directories to LD_LIBRARY_PATH"
 write_line "LIB_DIRS=\"$LIB_DIRS\""
 write_line '[ -n "$LIB_DIRS" ] && export LD_LIBRARY_PATH="${LIB_DIRS}:${LD_LIBRARY_PATH}"'
 write_line ""
+write_line "# Generate hostfile from SLURM allocation (srun mode)"
+if [ "$JOB_CHOICE" = "srun" ]; then
+    case "$LAUNCH_CMD" in
+    *mpirun*)
+        write_line 'if [ -z "${SLURM_NODELIST:-}" ]; then'
+        write_line '  echo "Error: srun mode requires a SLURM allocation (run salloc first)"'
+        write_line '  exit 1'
+        write_line 'fi'
+        write_line 'LSF_HOSTFILE=$(mktemp)'
+        write_line 'scontrol show hostnames "$SLURM_NODELIST" > "$LSF_HOSTFILE"'
+        write_line 'trap "rm -f \"$LSF_HOSTFILE\"" EXIT'
+        write_line 'echo "[bench] Hostfile: $LSF_HOSTFILE ($(wc -l < "$LSF_HOSTFILE") nodes)"'
+        write_line ""
+        ;;
+    esac
+fi
 
 # ============================================================
 # Helper functions that write to the script
@@ -361,13 +481,25 @@ write_line 'echo "--- Phase 1: Performance round ---"'
 write_line "echo \"[bench] Running benchmark $BENCHMARK_TYPE...\""
 write_line ""
 
-PHASE1_ARGS="-m ${MSG_MIN}:${MSG_MAX}:${MSG_INCR}"
+if [ "$MSG_MODE" = "list" ]; then
+    PHASE1_ARGS="-L ${MSG_LIST}"
+else
+    PHASE1_ARGS="-m ${MSG_MIN}:${MSG_MAX}:${MSG_INCR}"
+fi
 PHASE1_ARGS="$PHASE1_ARGS -i $PHASE1_MEASURE -w $PHASE1_WARMUP"
 PHASE1_ARGS="$PHASE1_ARGS -p $DS_PATTERN"
 [ "$VAL_ENABLED" = "true" ] && PHASE1_ARGS="$PHASE1_ARGS -v -e \"$VAL_METRICS\""
 [ "$DS_TYPE" = "file" ] && [ -n "$DS_FILE" ] && PHASE1_ARGS="$PHASE1_ARGS -f \"$DS_FILE\""
+PHASE1_ARGS="$PHASE1_ARGS -d $DATATYPE"
+[ "$OUTPUT_CSV" = "true" ] && [ -n "$OUTPUT_PATH" ] && PHASE1_ARGS="$PHASE1_ARGS -c -o \"$OUTPUT_PATH\""
+[ "$OUTPUT_BINARY" = "true" ] && [ -n "$OUTPUT_BIN_PATH" ] && PHASE1_ARGS="$PHASE1_ARGS -b -B \"$OUTPUT_BIN_PATH\""
 
-write_line "mpirun -np $NPROCS \\"
+write_line ""
+write_line '# GDB debug wrapper — wrap binary with gdb --args if GDB env var is set'
+write_line 'GDB_WRAPPER=""'
+write_line '[ -n "${GDB:-}" ] && GDB_WRAPPER="gdb --args"'
+write_line ""
+write_line "$LAUNCH_CMD \$GDB_WRAPPER \\"
 write_line "    \"\$BENCH_DIR/bin/\${ARCH}/\${TEST_NAME}/\${TEST_NAME}\" $PHASE1_ARGS"
 
 write_line 'BENCH_RC1=$?'
@@ -393,22 +525,26 @@ if [ "$DAEMON_ENABLED" = "true" ]; then
         d=$(echo "$daemon" | xargs)
         [ -z "$d" ] && continue
         write_line "if [ -x \"\$BENCH_DIR/bin/daemons/daemon_$d\" ]; then"
-        if [ "$JOB_CHOICE" = "slurm" ]; then
+        if [ "$JOB_CHOICE" = "slurm" ] || [ "$JOB_CHOICE" = "srun" ]; then
             write_line "  srun --nodes=\$NNODES --ntasks=\$NNODES --ntasks-per-node=1 --overlap \"\$BENCH_DIR/bin/daemons/daemon_$d\" $DAEMON_INTERVAL &"
             write_line "  echo \"[bench]   daemon_$d started via srun\""
         else
             write_line "  \"\$BENCH_DIR/bin/daemons/daemon_$d\" $DAEMON_INTERVAL &"
-            write_line "  DAEMON_PIDS+=(\"\$!\")"
-            write_line "  echo \"[bench]   daemon_$d started (PID \$!)\""
+            write_line "  echo \"[bench]   daemon_$d started\""
         fi
+        write_line "  DAEMON_PIDS+=(\"\$!\")"
         write_line "fi"
     done
     write_line 'echo ""'
 fi
 
-# Now add perf to LD_PRELOAD
+# Now add perf to LD_PRELOAD — put it FIRST so it intercepts before
+# compression / communication wrappers and can chain via RTLD_NEXT.
 write_line 'echo "[bench] Adding perf wrapper to LD_PRELOAD..."'
+write_line 'PERF_OLD="$LD_PRELOAD"'
+write_line 'LD_PRELOAD=""'
 write_preload_entry "perf" "$PERF_MODE" "$PERF_LIBPATHS" "$PERF_OUTPUT"
+write_line 'LD_PRELOAD="${LD_PRELOAD}${PERF_OLD:+:$PERF_OLD}"'
 write_line 'export LD_PRELOAD'
 write_line 'echo "[bench] Final LD_PRELOAD: ${LD_PRELOAD:-"(none)"}"'
 write_line "echo \"\""
@@ -416,13 +552,20 @@ write_line "echo \"\""
 write_line "echo \"[bench] Running benchmark $BENCHMARK_TYPE...\""
 write_line ""
 
-PHASE2_ARGS="-m ${MSG_MIN}:${MSG_MAX}:${MSG_INCR}"
+if [ "$MSG_MODE" = "list" ]; then
+    PHASE2_ARGS="-L ${MSG_LIST}"
+else
+    PHASE2_ARGS="-m ${MSG_MIN}:${MSG_MAX}:${MSG_INCR}"
+fi
 PHASE2_ARGS="$PHASE2_ARGS -i $PHASE2_MEASURE -w $PHASE2_WARMUP"
 PHASE2_ARGS="$PHASE2_ARGS -p $DS_PATTERN"
 [ "$VAL_ENABLED" = "true" ] && PHASE2_ARGS="$PHASE2_ARGS -v -e \"$VAL_METRICS\""
 [ "$DS_TYPE" = "file" ] && [ -n "$DS_FILE" ] && PHASE2_ARGS="$PHASE2_ARGS -f \"$DS_FILE\""
+PHASE2_ARGS="$PHASE2_ARGS -d $DATATYPE"
+[ "$OUTPUT_CSV" = "true" ] && [ -n "$OUTPUT_PATH" ] && PHASE2_ARGS="$PHASE2_ARGS -c -o \"$OUTPUT_PATH\""
+[ "$OUTPUT_BINARY" = "true" ] && [ -n "$OUTPUT_BIN_PATH" ] && PHASE2_ARGS="$PHASE2_ARGS -b -B \"$OUTPUT_BIN_PATH\""
 
-write_line "mpirun -np $NPROCS \\"
+write_line "$LAUNCH_CMD \$GDB_WRAPPER \\"
 write_line "    \"\$BENCH_DIR/bin/\${ARCH}/\${TEST_NAME}/\${TEST_NAME}\" $PHASE2_ARGS"
 
 write_line 'BENCH_RC2=$?'
@@ -435,17 +578,22 @@ write_line ""
 
 if [ "$DAEMON_ENABLED" = "true" ]; then
     write_line 'echo "[bench] Step 6: Stopping daemons..."'
-    if [ "$JOB_CHOICE" = "slurm" ]; then
-        write_line '# SLURM sends SIGTERM to child steps when the batch script exits.'
-        write_line '# Daemons catch it, flush data, and exit gracefully.'
-        write_line 'echo "[bench]   daemons will be cleaned up by SLURM"'
-    else
-        write_line 'for pid in "${DAEMON_PIDS[@]}"; do'
-        write_line '  kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null || true'
-        write_line '  echo "[bench]   daemon PID $pid stopped"'
-        write_line 'done'
-    fi
-    write_line 'echo ""'
+    write_line '# Signal EXIT via signal file — works under sbatch, salloc, and bare bash'
+    write_line 'IFS="," read -ra DAEMONS <<< "$DAEMON_LIST"'
+    write_line 'for _d in "${DAEMONS[@]}"; do'
+    write_line '  d=$(echo "$_d" | xargs)'
+    write_line '  [ -z "$d" ] && continue'
+    write_line '  echo "EXIT" > "${BENCH_DIR}/daemon_signals/daemon_${d}.signal" 2>/dev/null || true'
+    write_line '  echo "[bench]   signal EXIT sent to daemon_${d}"'
+    write_line 'done'
+    write_line 'echo "[bench]   waiting for daemons to exit gracefully (max 10s)..."'
+    write_line 'for pid in "${DAEMON_PIDS[@]}"; do'
+    write_line '  for i in $(seq 1 20); do'
+    write_line '    kill -0 "$pid" 2>/dev/null || break'
+    write_line '    sleep 0.5'
+    write_line '  done'
+    write_line '  kill -0 "$pid" 2>/dev/null && { kill "$pid" 2>/dev/null; echo "[bench]   force-killed PID $pid"; } || echo "[bench]   PID $pid exited cleanly"'
+    write_line 'done'
 fi
 
 # ============================================================

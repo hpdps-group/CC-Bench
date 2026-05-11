@@ -45,7 +45,7 @@ static int find_base_so(const char *output_path)
                     Dl_info info;
                     if (dladdr(s, &info) && info.dli_fname)
                         so_path = info.dli_fname;
-                    dlclose(h);
+                    /* Keep h open — so_path points into this library's memory */
                     break;
                 }
                 dlclose(h);

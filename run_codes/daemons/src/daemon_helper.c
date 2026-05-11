@@ -41,13 +41,28 @@ int daemon_should_stop(void)
 }
 
 /* ==================================================================
- * Time
+ * Time — auto-initialised via constructor before main()
+ *
+ * Records CLOCK_MONOTONIC at load time so daemon_get_time() returns
+ * seconds since load.  Daemons are launched via srun --overlap, so
+ * all constructors fire at ~the same instant and t=0 is naturally
+ * aligned across nodes.
  * ================================================================*/
+static double g_time_base = 0.0;
+
+__attribute__((constructor))
+static void daemon_time_init(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    g_time_base = (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+}
+
 double daemon_get_time(void)
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+    return ((double)ts.tv_sec + (double)ts.tv_nsec * 1e-9) - g_time_base;
 }
 
 int daemon_interruptible_sleep(double seconds)
@@ -159,6 +174,7 @@ void daemon_init(daemon_state_t *s, const char *device_name)
 {
     memset(s, 0, sizeof(*s));
     strncpy(s->device_name, device_name, DAEMON_NAME_MAX - 1);
+    s->time_zero = daemon_get_time();
 }
 
 int daemon_add_metric(daemon_state_t *s, const char *name, const char *unit)
@@ -188,7 +204,7 @@ daemon_sample_t *daemon_new_sample(daemon_state_t *s)
     }
 
     daemon_sample_t *sp = &s->samples[s->num_samples];
-    sp->timestamp = daemon_get_time();
+    sp->timestamp = daemon_get_time() - s->time_zero;
     sp->count     = s->num_metrics;
     memset(sp->values, 0, sizeof(sp->values[0]) * (size_t)s->num_metrics);
     s->num_samples++;
@@ -234,6 +250,7 @@ int daemon_flush_to_file(daemon_state_t *s, const char *filepath)
     fclose(fp);   /* also releases flock and closes fd */
     return 0;
 }
+
 
 void daemon_destroy(daemon_state_t *s)
 {

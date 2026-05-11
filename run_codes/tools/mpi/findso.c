@@ -16,7 +16,24 @@
 
 static int find_base_so(const char *output_path)
 {
-    void *sym = dlsym(RTLD_DEFAULT, "PMPI_Allreduce");
+    void *sym = NULL;
+
+    /* Try multiple methods to locate PMPI_Allreduce */
+    /* 1. dlsym(RTLD_DEFAULT) — works with most MPICH-derived implementations */
+    sym = dlsym(RTLD_DEFAULT, "PMPI_Allreduce");
+
+    /* 2. dlopen(NULL) — searches main executable and all linked libraries */
+    if (!sym) {
+        void *h = dlopen(NULL, RTLD_LAZY);
+        if (h) { sym = dlsym(h, "PMPI_Allreduce"); dlclose(h); }
+    }
+
+    /* 3. Explicit dlopen of libmpi.so — works when visibility is restricted */
+    if (!sym) {
+        void *h = dlopen("libmpi.so", RTLD_LAZY | RTLD_LOCAL);
+        if (h) { sym = dlsym(h, "PMPI_Allreduce"); dlclose(h); }
+    }
+
     if (!sym) {
         fprintf(stderr, "[findso] ERROR: PMPI_Allreduce not found — "
                 "MPI implementation may not support PMPI\n");

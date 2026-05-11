@@ -1,13 +1,14 @@
 {
   /*
     作业调度配置
-    job_choice: "slurm" — 通过 SLURM 提交作业
-                "raw"   — 直接 mpirun，无需调度器
+    job_choice: "slurm" — 生成 .slurm 脚本，通过 sbatch 提交作业
+                "srun"  — 生成 .srun.sh 脚本，在 salloc 后的终端里直接 bash 执行
+                "local" — 生成 .sh 脚本，本地单节点直接 mpirun 执行（无需调度器）
 
     slurm.job:       SLURM SBATCH 参数（仅 job_choice="slurm" 时生效）
     slurm.resources: 硬件资源申请（仅 job_choice="slurm" 时生效）
   */
-  "job_choice": "slurm",
+  "job_choice": "srun",
 
   "slurm": {
     "job": {
@@ -16,17 +17,11 @@
       "error": "%x-%j.err",
       "time": "01:00:00",
       "partition": "sdicnormal",
-      "qos": "normal",
- /*     "account": "sdicnormal" */
+      "qos": "normal"
     },
     "resources": {
-      "nodes": 4,
-      "tasks_per_node": 8,
-/*      "cpus_per_task": 8,
-      "gpus_per_node": 4,
-      "gpu_type": "a100",
-      "memory_gb": 64,   
-      "exclusive": true  */
+      "nodes": 1,
+      "tasks_per_node": 4
     }
   }
 }

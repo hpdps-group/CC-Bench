@@ -122,9 +122,17 @@ int main(int argc, char **argv)
            ngpu, hostname, interval);
 
     daemon_setup_signal_handler();
+    daemon_set_signal_file("daemon_signals/daemon_gpu_nvidia.signal");
     daemon_ensure_output_dir();
 
     while (!daemon_should_stop()) {
+        int sig = daemon_check_signal_file();
+        if (sig == 2) break;           /* EXIT → flush and stop */
+        if (sig == 1) {                /* PAUSE → skip sampling */
+            daemon_interruptible_sleep(interval);
+            continue;
+        }
+
         double t0 = daemon_get_time();
 
         for (int i = 0; i < ngpu; i++)

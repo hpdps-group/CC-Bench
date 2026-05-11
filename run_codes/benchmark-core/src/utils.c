@@ -261,6 +261,7 @@ pattern_type_t parse_pattern_type(const char *name) {
 static void print_usage(const char *prog_name) {
     printf("Usage: %s [options]\n", prog_name);
     printf("Options:\n");
+    printf("  -d TYPE          Data type: float, double, int, char (default: double)\n");
     printf("  -m MIN:MAX:INCR   Message size range (default: 1:65536:2)\n");
     printf("  -p PATTERN        Data pattern: plain, rank_linear, rank_product, sequential (default: rank_linear)\n");
     printf("  -i ITER           Number of iterations (default: 100)\n");
@@ -270,6 +271,11 @@ static void print_usage(const char *prog_name) {
     printf("  -v                Enable validation\n");
     printf("  -M                Compute all metrics\n");
     printf("  -e METRICS        Comma-separated metrics to compute (mse,mae,psnr,ssim,all)\n");
+    printf("  -c                Enable CSV output\n");
+    printf("  -o PATH           CSV output path (default: results/<test_name>.csv)\n");
+    printf("  -b                Enable binary output (reference + user data dump)\n");
+    printf("  -B PATH           Binary output base path (used as basename)\n");
+    printf("  -L X,Y,Z          Explicit message size list (overrides -m)\n");
     printf("  -h                Print this help\n");
 }
 
@@ -286,11 +292,14 @@ test_config_t parse_arguments(int argc, char **argv) {
         .validate = 0,
         .compute_metrics = 0,
         .metrics_mask = 0,
-        .pattern_type = PATTERN_RANK_LINEAR
+        .save_binary = 0,
+        .bin_path = "",
+        .pattern_type = PATTERN_RANK_LINEAR,
+        .data_type = TYPE_DOUBLE
     };
 
     int opt;
-    while ((opt = getopt(argc, argv, "m:i:w:f:t:vMhe:p:")) != -1) {
+    while ((opt = getopt(argc, argv, "d:m:i:w:f:t:vMhe:p:co:L:bB:")) != -1) {
         switch (opt) {
             case 'm': {
                 char *token = strtok(optarg, ":");
@@ -327,9 +336,53 @@ test_config_t parse_arguments(int argc, char **argv) {
             case 'p':
                 config.pattern_type = parse_pattern_type(optarg);
                 break;
+            case 'd':
+                if (strcasecmp(optarg, "float") == 0)
+                    config.data_type = TYPE_FLOAT;
+                else if (strcasecmp(optarg, "double") == 0)
+                    config.data_type = TYPE_DOUBLE;
+                else if (strcasecmp(optarg, "int") == 0)
+                    config.data_type = TYPE_INT;
+                else if (strcasecmp(optarg, "char") == 0)
+                    config.data_type = TYPE_CHAR;
+                else {
+                    fprintf(stderr, "Unknown data type: '%s' (options: float, double, int, char)\n", optarg);
+                    exit(1);
+                }
+                break;
             case 'h':
                 print_usage(argv[0]);
                 exit(0);
+            case 'c':
+                config.save_csv = 1;
+                break;
+            case 'o':
+                strncpy(config.csv_path, optarg, sizeof(config.csv_path) - 1);
+                config.csv_path[sizeof(config.csv_path) - 1] = '\0';
+                break;
+            case 'b':
+                config.save_binary = 1;
+                break;
+            case 'B':
+                strncpy(config.bin_path, optarg, sizeof(config.bin_path) - 1);
+                config.bin_path[sizeof(config.bin_path) - 1] = '\0';
+                break;
+            case 'L': {
+                config.use_size_list = 1;
+                config.num_sizes = 0;
+                size_t min_seen = (size_t)-1, max_seen = 0;
+                char *tok = strtok(optarg, ",");
+                while (tok && config.num_sizes < 256) {
+                    size_t sz = (size_t)atol(tok);
+                    config.size_list[config.num_sizes++] = sz;
+                    if (sz < min_seen) min_seen = sz;
+                    if (sz > max_seen) max_seen = sz;
+                    tok = strtok(NULL, ",");
+                }
+                config.min_message_size = min_seen;
+                config.max_message_size = max_seen;
+                break;
+            }
             default:
                 print_usage(argv[0]);
                 exit(1);
@@ -337,4 +390,35 @@ test_config_t parse_arguments(int argc, char **argv) {
     }
 
     return config;
+}
+
+/* ── Message-size iterator ───────────────────────────────────────── */
+
+void size_iter_init(size_iter_t *it, const test_config_t *config) {
+    it->use_list  = config->use_size_list;
+    it->index     = 0;
+    it->min_size  = config->min_message_size;
+    it->max_size  = config->max_message_size;
+    it->incr      = config->message_size_incr;
+    it->num_sizes = config->num_sizes;
+    if (it->use_list) {
+        for (int i = 0; i < it->num_sizes; i++)
+            it->size_list[i] = config->size_list[i];
+    }
+}
+
+int size_iter_next(size_iter_t *it, size_t *size) {
+    if (it->use_list) {
+        if (it->index >= it->num_sizes) return 0;
+        *size = it->size_list[it->index++];
+        return 1;
+    }
+
+    size_t s = it->min_size;
+    for (int i = 0; i < it->index; i++)
+        s *= it->incr;
+    it->index++;
+    if (s > it->max_size) return 0;
+    *size = s;
+    return 1;
 }

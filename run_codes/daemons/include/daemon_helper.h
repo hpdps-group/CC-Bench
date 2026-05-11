@@ -24,7 +24,7 @@ typedef struct {
 
 /* ── one poll sample ─────────────────────────────────────────── */
 typedef struct {
-    double  timestamp;                  /* monotonic seconds          */
+    double  timestamp;                  /* elapsed seconds (monotonic)*/
     double  values[DAEMON_MAX_METRICS];
     int     count;                      /* how many values valid      */
 } daemon_sample_t;
@@ -37,6 +37,7 @@ typedef struct {
     daemon_sample_t *samples;           /* dynamic array              */
     int  num_samples;
     int  capacity;
+    double time_zero;                   /* CLOCK_MONOTONIC at init    */
 } daemon_state_t;
 
 /* ── core API ────────────────────────────────────────────────── */

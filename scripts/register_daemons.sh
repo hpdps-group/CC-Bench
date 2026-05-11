@@ -12,6 +12,9 @@
 # Each file must be named daemon_<name>.c and contain main().
 # daemon_helper.c/.h are excluded (they are the shared framework).
 #
+# Daemons that #include <cuda.h> are automatically linked with -lcuda;
+# the script searches common CUDA installation paths for the header.
+#
 # Output: bin/daemons/daemon_<name> (one executable per daemon)
 #
 # Name collision rules:
@@ -30,6 +33,46 @@ OUTPUT_DIR=bin/daemons
 DRY_RUN="${1:-}"
 
 mkdir -p "$OUTPUT_DIR"
+
+# ── Auto-detect CUDA (for daemons that #include <cuda.h>) ────────
+CUDA_INC=""
+CUDA_LIB=""
+CUDA_HOME_CANDIDATE=""
+
+# 1) Try nvcc location first
+if command -v nvcc &>/dev/null; then
+    CUDA_HOME_CANDIDATE="$(dirname "$(dirname "$(command -v nvcc)")")"
+fi
+# 2) Fallback: common installation roots
+if [ -z "$CUDA_HOME_CANDIDATE" ] || [ ! -f "$CUDA_HOME_CANDIDATE/include/cuda.h" ]; then
+    for cuda_root in /usr/local/cuda /usr/lib/cuda /opt/cuda; do
+        if [ -f "$cuda_root/include/cuda.h" ]; then
+            CUDA_HOME_CANDIDATE="$cuda_root"
+            break
+        fi
+    done
+fi
+
+if [ -n "$CUDA_HOME_CANDIDATE" ] && [ -f "$CUDA_HOME_CANDIDATE/include/cuda.h" ]; then
+    CUDA_INC="-I$CUDA_HOME_CANDIDATE/include"
+
+    # Default: let linker find libcuda.so in system paths (NVIDIA driver).
+    CUDA_LIB="-lcuda"
+
+    # If libcuda.so is NOT linkable (login node without driver),
+    # fall back to the CUDA toolkit stub library.
+    if ! echo 'int main(){}' | gcc -x c - -lcuda -o /dev/null 2>/dev/null; then
+        for stub_dir in \
+            "$CUDA_HOME_CANDIDATE/targets/x86_64-linux/lib/stubs" \
+            "$CUDA_HOME_CANDIDATE/lib64/stubs" \
+            "$CUDA_HOME_CANDIDATE/lib/stubs"; do
+            if [ -f "$stub_dir/libcuda.so" ]; then
+                CUDA_LIB="-L$stub_dir -lcuda"
+                break
+            fi
+        done
+    fi
+fi
 
 # ---- Collect & sort daemon source files ----
 declare -A daemon_seen  # name -> source file
@@ -99,9 +142,22 @@ for entry in $FILES; do
         continue
     fi
 
+    # Auto-detect if this daemon needs CUDA
+    DAEMON_EXTRA_INC=""
+    DAEMON_EXTRA_LIBS=""
+    if grep -q '#include.*cuda\.h' "$src" 2>/dev/null; then
+        if [ -n "$CUDA_INC" ]; then
+            DAEMON_EXTRA_INC="$CUDA_INC"
+            DAEMON_EXTRA_LIBS="$CUDA_LIB"
+            echo "register_daemons.sh:   [CUDA detected]" >&2
+        else
+            echo "register_daemons.sh:   [WARNING: CUDA not found — $name may fail]" >&2
+        fi
+    fi
+
     echo "register_daemons.sh: compiling $out ..." >&2
-    gcc -O3 -Wall -Wextra "$HELPER_INC" \
-        "$HELPER_SRC" "$src" -o "$out" -lm
+    gcc -O2 -march=x86-64 -Wall -Wextra "$HELPER_INC" $DAEMON_EXTRA_INC \
+        "$HELPER_SRC" "$src" -o "$out" -lm -lpthread $DAEMON_EXTRA_LIBS
 done
 
 if [ "$DRY_RUN" = "--dry-run" ]; then

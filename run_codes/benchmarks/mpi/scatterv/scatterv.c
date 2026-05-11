@@ -1,0 +1,207 @@
+/**
+ * MPI_Scatterv correctness and performance test.
+ *
+ * Tests user's MPI_Scatterv against PMPI reference.
+ * Root scatters potentially different-sized chunks to each rank.
+ * Distribution controlled by env SCATTERV_WEIGHTS (comma-separated,
+ * one per rank).  Falls back to uniform distribution if unset.
+ */
+
+#include <mpi.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "utils.h"
+#include "validation.h"
+#include "base_impl.h"
+#include "mpi/mpi_utils.h"
+
+/* PMPI declarations */
+extern int PMPI_Scatterv(const void *sendbuf, const int sendcounts[], const int displs[],
+                         MPI_Datatype sendtype,
+                         void *recvbuf, int recvcount, MPI_Datatype recvtype,
+                         int root, MPI_Comm comm);
+extern int PMPI_Barrier(MPI_Comm comm);
+extern int PMPI_Type_size(MPI_Datatype datatype, int *size);
+extern int PMPI_Reduce(const void *sendbuf, void *recvbuf, int count,
+                       MPI_Datatype datatype, MPI_Op op, int root, MPI_Comm comm);
+
+#define ROOT 0
+
+/* Build sendcounts and displs from weights.
+ * Returns total elements in sendbuf (= sum of sendcounts). */
+static int build_distribution(int *sendcounts, int *displs,
+                               const int *weights, int total_weight,
+                               int nranks, int total_elems) {
+    int offset = 0;
+    for (int i = 0; i < nranks; i++) {
+        if (weights) {
+            sendcounts[i] = weights[i] * total_elems / total_weight;
+            if (sendcounts[i] < 1) sendcounts[i] = 1;
+        } else {
+            sendcounts[i] = total_elems / nranks;
+            if (sendcounts[i] < 1) sendcounts[i] = 1;
+        }
+        displs[i] = offset;
+        offset += sendcounts[i];
+    }
+    return offset;
+}
+
+static void run_test_size(const mpi_test_context_t *ctx, size_t msg_size,
+                          MPI_Datatype datatype,
+                          const int *weights, int total_weight,
+                          void *user_sendbuf, void *user_recvbuf,
+                          void *ref_sendbuf, void *ref_recvbuf) {
+    int dtype_size;
+    PMPI_Type_size(datatype, &dtype_size);
+    int total_elems = msg_size / dtype_size;
+    if (total_elems < ctx->size) total_elems = ctx->size;
+
+    int *sendcounts = malloc(ctx->size * sizeof(int));
+    int *displs     = malloc(ctx->size * sizeof(int));
+    int total_send = build_distribution(sendcounts, displs,
+                                         weights, total_weight,
+                                         ctx->size, total_elems);
+
+    size_t root_send_bytes = (size_t)total_send * dtype_size;
+    int recvcount = sendcounts[ctx->rank];
+
+    /* 1. Load input data on root */
+    if (ctx->rank == ROOT) {
+        mpi_load_input(ctx, user_sendbuf, root_send_bytes, datatype);
+        memcpy(ref_sendbuf, user_sendbuf, root_send_bytes);
+    }
+    PMPI_Barrier(MPI_COMM_WORLD);
+
+    /* 2. Warmup */
+    for (int i = 0; i < ctx->config.warmup_iterations; i++) {
+        MPI_Scatterv(user_sendbuf, sendcounts, displs, datatype,
+                     user_recvbuf, recvcount, datatype,
+                     ROOT, MPI_COMM_WORLD);
+        PMPI_Scatterv(ref_sendbuf, sendcounts, displs, datatype,
+                      ref_recvbuf, recvcount, datatype,
+                      ROOT, MPI_COMM_WORLD);
+    }
+
+    /* 3. Reference result */
+    PMPI_Scatterv(ref_sendbuf, sendcounts, displs, datatype,
+                  ref_recvbuf, recvcount, datatype,
+                  ROOT, MPI_COMM_WORLD);
+
+    /* 4. Main timing and validation loop */
+    double total_time = 0.0;
+    int iter_errors = 0;
+    validation_result_t metrics_acc = {0};
+    metrics_acc.num_elements = recvcount;
+
+    for (int iter = 0; iter < ctx->config.iterations; iter++) {
+        PMPI_Barrier(MPI_COMM_WORLD);
+        double start = MPI_Wtime();
+        MPI_Scatterv(user_sendbuf, sendcounts, displs, datatype,
+                     user_recvbuf, recvcount, datatype,
+                     ROOT, MPI_COMM_WORLD);
+        PMPI_Barrier(MPI_COMM_WORLD);
+        double end = MPI_Wtime();
+        total_time += (end - start);
+
+        if (ctx->config.validate) {
+            validation_result_t iter_metrics = validate_result(
+                user_recvbuf, ref_recvbuf, recvcount,
+                mpi_to_data_type(datatype), ctx->config.tolerance,
+                ctx->config.metrics_mask);
+            if (!iter_metrics.correct) iter_errors++;
+            for (int m = 0; m < MAX_METRICS; m++) {
+                if (ctx->config.metrics_mask & (1u << m))
+                    metrics_acc.values[m] += iter_metrics.values[m];
+            }
+        }
+    }
+
+    /* 5. Average metrics */
+    if (ctx->config.validate && ctx->config.iterations > 0) {
+        metrics_acc.correct = (iter_errors == 0);
+        for (int m = 0; m < MAX_METRICS; m++) {
+            if (ctx->config.metrics_mask & (1u << m))
+                metrics_acc.values[m] /= ctx->config.iterations;
+        }
+        if (iter_errors > 0 && ctx->rank == ROOT) {
+            printf("  Validation FAILED at size %zu (%d/%d iterations failed)\n",
+                   msg_size, iter_errors, ctx->config.iterations);
+        }
+    }
+
+    /* 6. Report (recvcount per rank) */
+    mpi_report_results(ctx, msg_size, recvcount, total_time, iter_errors,
+                       ctx->config.validate ? &metrics_acc : NULL);
+
+    free(sendcounts);
+    free(displs);
+}
+
+int main(int argc, char **argv) {
+    mpi_test_context_t ctx = mpi_test_init(argc, argv, "MPI_Scatterv");
+
+    if (ctx.size < 2) {
+        if (ctx.rank == 0)
+            fprintf(stderr, "Error: Need at least 2 processes\n");
+        mpi_test_fini(&ctx);
+        return 1;
+    }
+
+    if (load_base_impl(BASE_SO_FILE) != 0) {
+        if (ctx.rank == 0)
+            fprintf(stderr, "Error: base impl not found\n");
+        mpi_test_fini(&ctx);
+        return 1;
+    }
+
+    /* Parse weights from env (fallback: uniform = NULL) */
+    int n_weights = 0;
+    int *weights = parse_env_int_array("SCATTERV_WEIGHTS", ctx.size, &n_weights);
+    int total_weight = 0;
+    if (weights) {
+        for (int i = 0; i < n_weights; i++) total_weight += weights[i];
+    }
+
+    MPI_Datatype datatype = data_type_to_mpi(ctx.config.data_type);
+
+    size_t max_size = ctx.config.max_message_size;
+    /* Root sendbuf holds all data; each rank recvbuf holds worst-case chunk */
+    size_t root_max_bytes = max_size * ctx.size;
+
+    void *user_sendbuf = allocate_aligned_buffer(root_max_bytes, 64);
+    void *user_recvbuf = allocate_aligned_buffer(max_size, 64);
+    void *ref_sendbuf  = allocate_aligned_buffer(root_max_bytes, 64);
+    void *ref_recvbuf  = allocate_aligned_buffer(max_size, 64);
+
+    if (!user_sendbuf || !user_recvbuf || !ref_sendbuf || !ref_recvbuf) {
+        if (ctx.rank == 0)
+            fprintf(stderr, "Error: Memory allocation failed\n");
+        free_aligned_buffer(user_sendbuf);
+        free_aligned_buffer(user_recvbuf);
+        free_aligned_buffer(ref_sendbuf);
+        free_aligned_buffer(ref_recvbuf);
+        mpi_test_fini(&ctx);
+        return 1;
+    }
+
+    size_iter_t msg_iter;
+    size_iter_init(&msg_iter, &ctx.config);
+    size_t msg_size;
+    while (size_iter_next(&msg_iter, &msg_size)) {
+        run_test_size(&ctx, msg_size, datatype,
+                      weights, total_weight,
+                      user_sendbuf, user_recvbuf,
+                      ref_sendbuf, ref_recvbuf);
+    }
+
+    free_aligned_buffer(user_sendbuf);
+    free_aligned_buffer(user_recvbuf);
+    free_aligned_buffer(ref_sendbuf);
+    free_aligned_buffer(ref_recvbuf);
+    free(weights);
+
+    mpi_test_fini(&ctx);
+    return 0;
+}

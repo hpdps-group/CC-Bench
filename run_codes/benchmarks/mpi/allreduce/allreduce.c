@@ -18,12 +18,15 @@
 #include "validation.h"
 #include "base_impl.h"
 #include "mpi/mpi_utils.h"
+#include "binary_output.h"
 
 /* PMPI declarations used directly by this test */
 extern int PMPI_Allreduce(const void *sendbuf, void *recvbuf, int count,
                           MPI_Datatype datatype, MPI_Op op, MPI_Comm comm);
 extern int PMPI_Barrier(MPI_Comm comm);
 extern int PMPI_Type_size(MPI_Datatype datatype, int *size);
+extern int PMPI_Reduce(const void *sendbuf, void *recvbuf, int count,
+                       MPI_Datatype datatype, MPI_Op op, int root, MPI_Comm comm);
 
 /* Run single test for given message size */
 static void run_test_size(const mpi_test_context_t *ctx, size_t msg_size,
@@ -48,6 +51,10 @@ static void run_test_size(const mpi_test_context_t *ctx, size_t msg_size,
     /* 3. Reference result — computed once before timing loop */
     PMPI_Allreduce(ref_sendbuf, ref_recvbuf, count, datatype, op, MPI_COMM_WORLD);
 
+    /* 3a. Allocate user accumulator for binary output */
+    data_type_t dtype_gen = mpi_to_data_type(datatype);
+    void *user_accum = ctx->config.save_binary ? calloc(1, msg_size) : NULL;
+
     /* 4. Main timing and validation loop */
     double total_time = 0.0;
     int iter_errors = 0;
@@ -61,6 +68,9 @@ static void run_test_size(const mpi_test_context_t *ctx, size_t msg_size,
         PMPI_Barrier(MPI_COMM_WORLD);
         double end = MPI_Wtime();
         total_time += (end - start);
+
+        /* Accumulate user result across iterations for binary output */
+        if (user_accum) binary_accumulate(user_accum, user_recvbuf, count, dtype_gen);
 
         /* Validate this iteration against reference */
         if (ctx->config.validate) {
@@ -93,7 +103,33 @@ static void run_test_size(const mpi_test_context_t *ctx, size_t msg_size,
         }
     }
 
-    /* 6. Collect and report */
+    /* 5a. Average and write binary output */
+    if (user_accum) {
+        if (ctx->config.iterations > 0)
+            binary_average(user_accum, count, dtype_gen, ctx->config.iterations);
+        write_binary_single(ctx->config.bin_path, "reference", ref_recvbuf, msg_size, ctx->rank, 0);
+        write_binary_single(ctx->config.bin_path, "user", user_accum, msg_size, ctx->rank, 0);
+        free(user_accum);
+    }
+
+    /* 6. Bandwidth: each rank sends + receives msg_size (2x NIC traffic) */
+    double avg_sec = total_time / ctx->config.iterations;
+    double bw = 0.0;
+    if (avg_sec > 0.0)
+        bw = 2.0 * msg_size / avg_sec;
+    bw /= 1.0e9; /* GB/s */
+
+    double bw_min = 0, bw_max = 0, bw_sum = 0;
+    PMPI_Reduce(&bw, &bw_min, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
+    PMPI_Reduce(&bw, &bw_max, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+    PMPI_Reduce(&bw, &bw_sum, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    bw_sum /= ctx->size;
+
+    if (ctx->rank == 0)
+        printf("  Bandwidth: avg=%8.2f GB/s, min=%8.2f GB/s, max=%8.2f GB/s\n",
+               bw_sum, bw_min, bw_max);
+
+    /* 7. Collect and report */
     mpi_report_results(ctx, msg_size, count, total_time, iter_errors,
                        ctx->config.validate ? &metrics_acc : NULL);
 }
@@ -116,7 +152,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    MPI_Datatype datatype = MPI_DOUBLE;
+    MPI_Datatype datatype = data_type_to_mpi(ctx.config.data_type);
     MPI_Op op = MPI_SUM;
 
     /* Allocate maximum sized buffers */
@@ -138,9 +174,10 @@ int main(int argc, char **argv) {
     }
 
     /* Run tests for each message size */
-    for (size_t msg_size = ctx.config.min_message_size;
-         msg_size <= ctx.config.max_message_size;
-         msg_size *= ctx.config.message_size_incr) {
+    size_iter_t msg_iter;
+    size_iter_init(&msg_iter, &ctx.config);
+    size_t msg_size;
+    while (size_iter_next(&msg_iter, &msg_size)) {
         run_test_size(&ctx, msg_size, datatype, op,
                      user_sendbuf, user_recvbuf,
                      ref_sendbuf, ref_recvbuf);

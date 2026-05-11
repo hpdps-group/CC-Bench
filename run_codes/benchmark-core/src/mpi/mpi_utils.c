@@ -6,8 +6,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 #include <math.h>
 #include <strings.h>
+#include <dlfcn.h>
+#include "job_device_mapper.h"
 
 /* PMPI declarations */
 extern int PMPI_Init(int *argc, char ***argv);
@@ -29,15 +32,43 @@ mpi_test_context_t mpi_test_init(int argc, char **argv, const char *test_name) {
     PMPI_Init(&argc, &argv);
     PMPI_Comm_rank(MPI_COMM_WORLD, &ctx.rank);
     PMPI_Comm_size(MPI_COMM_WORLD, &ctx.size);
+
+    /* ── Job-device mapper (optional, loaded via dlopen) ─────────── */
+    device_map_ctx_t dm_ctx;
+    device_map_init(&dm_ctx, ctx.rank, ctx.size);
+
+    void *dm_handle = dlopen("bin/libs/libjob_device_mapper.so",
+                             RTLD_LAZY | RTLD_LOCAL);
+    if (dm_handle) {
+        void (*dm_func)(device_map_ctx_t *) =
+            (void (*)(device_map_ctx_t *))dlsym(dm_handle, "map_job_to_device");
+        if (dm_func)
+            dm_func(&dm_ctx);
+        dlclose(dm_handle);
+    }
+
+    device_map_flush_to_file(&dm_ctx);
+    device_map_destroy(&dm_ctx);
+    /* ────────────────────────────────────────────────────────────── */
+
     ctx.config = parse_arguments(argc, argv);
 
     if (ctx.rank == 0) {
         printf("=== %s Test ===\n", test_name);
         printf("Processes: %d\n", ctx.size);
-        printf("Message sizes: %zu to %zu (x%d)\n",
-               ctx.config.min_message_size,
-               ctx.config.max_message_size,
-               ctx.config.message_size_incr);
+        if (ctx.config.use_size_list) {
+            printf("Message sizes (list): ");
+            for (int i = 0; i < ctx.config.num_sizes; i++) {
+                if (i > 0) printf(", ");
+                printf("%zu", ctx.config.size_list[i]);
+            }
+            printf("\n");
+        } else {
+            printf("Message sizes: %zu to %zu (x%d)\n",
+                   ctx.config.min_message_size,
+                   ctx.config.max_message_size,
+                   ctx.config.message_size_incr);
+        }
         printf("Iterations: %d (warmup: %d)\n",
                ctx.config.iterations, ctx.config.warmup_iterations);
         printf("Validation: %s\n", ctx.config.validate ? "enabled" : "disabled");
@@ -74,7 +105,25 @@ void mpi_load_input(const mpi_test_context_t *ctx, void *buf, size_t msg_size,
         PMPI_Bcast(&total_file_size, 1, MPI_UNSIGNED_LONG, 0, MPI_COMM_WORLD);
 
         size_t chunk_size = msg_size;
-        size_t offset = ctx->rank * chunk_size;
+        size_t offset = 0;
+
+        /* Offset mode: env vars set by build_script.sh from JSONC offset_config */
+        const char *custom_env = getenv("DS_CUSTOM_OFFSETS");
+        if (custom_env && custom_env[0]) {
+            /* Custom per-rank offsets via comma-separated array */
+            int n = 0;
+            int *offsets = parse_env_int_array("DS_CUSTOM_OFFSETS", 0, &n);
+            if (offsets && ctx->rank < n)
+                offset = (size_t)offsets[ctx->rank];
+            free(offsets);
+        } else {
+            const char *base_env = getenv("DS_BASE_OFFSET");
+            if (base_env) offset = (size_t)atol(base_env);
+            const char *per_rank_env = getenv("DS_PER_RANK_OFFSET");
+            if (!per_rank_env || strcmp(per_rank_env, "true") == 0)
+                offset += (size_t)ctx->rank * chunk_size;
+        }
+
         if (total_file_size > 0) {
             offset = offset % total_file_size;
             if (offset + chunk_size > total_file_size)
@@ -159,3 +208,86 @@ MPI_Op parse_mpi_op(const char *name) {
     if (strcasecmp(name, "prod") == 0) return MPI_PROD;
     return MPI_SUM;
 }
+
+/* ── Env-var array parsing ───────────────────────────────────────── */
+
+int *parse_env_int_array(const char *env_name, int expected_len, int *out_len) {
+    const char *s = getenv(env_name);
+    if (!s) {
+        *out_len = 0;
+        return NULL;
+    }
+
+    char *copy = strdup(s);
+    if (!copy) {
+        fprintf(stderr, "Error: strdup failed for %s\n", env_name);
+        exit(1);
+    }
+
+    int cap = 8, len = 0;
+    int *arr = malloc(cap * sizeof(int));
+    if (!arr) {
+        fprintf(stderr, "Error: malloc failed for %s\n", env_name);
+        free(copy);
+        exit(1);
+    }
+
+    char *tok = strtok(copy, ",");
+    while (tok) {
+        if (len >= cap) {
+            cap *= 2;
+            int *tmp = realloc(arr, cap * sizeof(int));
+            if (!tmp) { free(arr); free(copy); exit(1); }
+            arr = tmp;
+        }
+        arr[len++] = atoi(tok);
+        tok = strtok(NULL, ",");
+    }
+    free(copy);
+
+    if (expected_len > 0 && len != expected_len) {
+        fprintf(stderr, "Error: %s has %d values, expected %d\n",
+                env_name, len, expected_len);
+        free(arr);
+        exit(1);
+    }
+
+    *out_len = len;
+    return arr;
+}
+
+/* ── CSV output ───────────────────────────────────────────────── */
+
+void mpi_csv_write(const char *path, const char *header, const char *fmt, ...) {
+    int rank;
+    PMPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    if (rank != 0) return;
+
+    int exists = 0;
+    FILE *fp = fopen(path, "r");
+    if (fp) { exists = 1; fclose(fp); }
+
+    fp = fopen(path, "a");
+    if (!fp) {
+        fprintf(stderr, "Error: cannot open CSV file %s\n", path);
+        return;
+    }
+
+    if (header && !exists) {
+        fprintf(fp, "%s\n", header);
+    }
+
+    if (fmt) {
+        va_list args;
+        va_start(args, fmt);
+        vfprintf(fp, fmt, args);
+        fprintf(fp, "\n");
+        va_end(args);
+    }
+
+    fclose(fp);
+}
+
+/* ── Message size iterator ────────────────────────────────────── */
+
+/* size_iter moved to utils.c */

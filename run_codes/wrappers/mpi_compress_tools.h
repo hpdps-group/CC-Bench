@@ -15,6 +15,8 @@
 #define TAG_ALLGATHER   0x2500
 #define TAG_ALLTOALL    0x2600
 #define TAG_REDUCE_SCAT 0x2700
+#define TAG_ALLGATHERV  0x2800
+#define TAG_SCATTERV    0x2900
 
 /*===========================================================================*
  * Utility — MPI-independent helpers                                         *

@@ -2,3 +2,5 @@ bin/
 perf_files/
 scripts/run/
 daemon_signals/
+results/
+dataset/

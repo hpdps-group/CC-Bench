@@ -19,41 +19,89 @@
       pattern_type: "plain" / "rank_linear" / "rank_product" / "sequential"
 
     message_sizes: 消息大小范围
-      min/max — 字节数
-      increment_type: "multiply" — 每次乘以 increment 值（如 *=2）
-                      "add"      — 每次加上 increment 值
+      mode: "range" — 使用 min/max/increment 定义范围（默认）
+            "list"  — 使用显式列表 list:[...]
+      当 mode="range" 时：
+        min/max — 字节数
+        increment_type: "multiply" — 每次乘以 increment 值（如 *=2）
+                        "add"      — 每次加上 increment 值
+      当 mode="list" 时：
+        list — 显式列出所有要测试的消息大小
   */
-  "benchmark_type": "mpi_allreduce",
-  "communication_arch": "mpi",
+  "benchmark_type": "nccl_allreduce",
+  "communication_arch": "nccl",
 
   "data_source": {
-    "type": "pattern",
-    "file_path": "/path/to/data/file.dat",
+    "type": "file",
+    "file_path": "/data/home/scyb672/run/datasets/nyx/baryon_density.f32",
     "pattern_type": "rank_linear",
-    "file_format": "binary"
+    "file_format": "binary",
+    "offset_config": {
+      "base_offset": 0,
+      "per_rank_offset": true,
+      "custom_offsets": []
+    }
   },
 
   "mpi_operation": {
-    "type": "allreduce",
-    "datatype": "MPI_DOUBLE",
-    "operation": "MPI_SUM"
+    "datatype": "MPI_FLOAT"
   },
 
   "iterations": {
     "performance": {
-      "warmup": 10,
-      "measurement": 100
+      "warmup": 3,
+      "measurement": 5
     },
     "perf_round": {
-      "warmup": 10,
-      "measurement": 10
+      "warmup": 3,
+      "measurement": 5
     }
   },
 
   "message_sizes": {
+    "mode": "range",
     "min": 1024,
-    "max": 65536,
+    "max": 2048,
     "increment": 2,
-    "increment_type": "multiply"
+    "increment_type": "multiply",
+    "list": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      32,
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096,
+      8192,
+      16384,
+      32768,
+      65536,
+      131072,
+      262144,
+      524288,
+      1048576,
+      2097152,
+      4194304,
+      8388608,
+      16777216,
+      33554432,
+      67108864,
+      134217728,
+      268435456,
+      536870912
+    ]
+  },
+
+  "output": {
+    "csv": false,
+    "csv_path": "results/pingpong.csv",
+    "binary": true,
+    "bin_path": "results/AllReduce"
   }
 }

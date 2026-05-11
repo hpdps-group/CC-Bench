@@ -20,10 +20,13 @@
   /* Wrapper 通用环境变量 */
   "MPI_TOLERANCE": "1e-5",
   "MPI_BLOCK_SIZE": "1024",
+  "NCCL_DEBUG":"INFO",
+  "NCCL_DEBUG_SUBSYS": "ALL",
+  "CUDA_LAUNCH_BLOCKING": "1",
 
   /* UCX / InfiniBand 传输配置 */
   "UCX_TLS": "rc,self,sm",
-  "UCX_NET_DEVICES": "mlx5_0:1"
+  "UCX_NET_DEVICES": "mlx5_0:1",
 
   /* Wrapper 环境变量 — 按需写 */
   /* "SZ3_ABS_EB": "1e-6",
@@ -31,4 +34,24 @@
    "MPI_SZ3_LIB_PATH": "",
    "MPI_ZFP_TOLERANCE": "1e-3",
    "DIETGPU_DEVICE_ID": "0" */
+
+  /*
+    Allgatherv / Scatterv 权重配置
+
+    每个 rank 的数据量按权重比例分配，基准 msg_size 乘以权重决定实际传输量。
+    逗号分隔，长度必须等于进程数。不设置则回退均匀分布（退化为标准 Allgather/Scatter）。
+
+    例（4 进程，不均匀分布）：
+     rank:      0     1     2     3
+                ↓     ↓     ↓     ↓
+    ALLGATHERV_WEIGHTS 为 "1,1,2,4"
+    SCATTERV_WEIGHTS   为 "4,2,1,1"
+    则 rank 3 收到 4/(1+1+2+4) = 50% 的数据，rank 0 收到 12.5%
+
+    未来扩展（Alltoallv 等）：
+    二维数组扁平化为逗号串，行主序排列，长度 = size*size。
+    解析器 parse_env_int_array() 天然支持任意长度一维展开。
+  */
+  "ALLGATHERV_WEIGHTS": "1,2,3,4",
+  "SCATTERV_WEIGHTS": "4,3,2,1"
 }

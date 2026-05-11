@@ -22,13 +22,13 @@
     wrapper_code_examples/compression/sz3/ 下（sz3 mode 1 示例）:
    用户自定义实现请放在 your_wrapper_code/compression/ 下。
   */
-  "mode": 2,
+  "mode": 0,
 
-  "library_paths": ["/public/home/konnyaku_cstdio/mybench/plugin_projects/compression/SZ3/install/lib64/libSZ3c.so"],
+  "library_paths": ["plugin_projects/compression/SZ3/install/lib64/libSZ3c.so"],
 
-  "source_files": ["/public/home/konnyaku_cstdio/mybench/run_codes/wrappers/mpi_compress_tools.c"],
+  "source_files": ["run_codes/wrappers/mpi_compress_tools.c"],
 
-  "source_dirs": ["/public/home/konnyaku_cstdio/mybench/userconfig/wrapper_code_examples/compression/sz3"],
+  "source_dirs": ["userconfig/wrapper_code_examples/compression/sz3_for_zccl"],
 
   "include_files": [],
 
@@ -36,5 +36,5 @@
 
   "libraries": [],
 
-  "output_name": "libtest_sz3.so"
+  "output_name": "libzccl_sz3.so"
 }

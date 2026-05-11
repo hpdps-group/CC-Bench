@@ -30,7 +30,9 @@ cfg = load_jsonc(base + '/perf_kernel_selection.jsonc')
 basic = load_jsonc(base + '/bench_basic_config.jsonc')
 
 arch  = basic.get('communication_arch', 'mpi')
-comp  = {'mpi': 'mpicc', 'nccl': 'nvcc', 'rccl': 'hipcc'}.get(arch, 'mpicc')
+# Perf wrappers are LD_PRELOAD host-code libraries (NCCL stubs + dlsym).
+# They don't compile any CUDA kernels, so always use the system C compiler.
+comp  = {'mpi': 'mpicc', 'nccl': 'cc', 'rccl': 'cc'}.get(arch, 'mpicc')
 
 def emit(k, v):
     if isinstance(v, bool):           v = 'true' if v else 'false'
@@ -46,9 +48,34 @@ emit('PERF_SRC_DIRS',  json.dumps(cfg.get('source_dirs', []), ensure_ascii=True)
 emit('PERF_INC_FILES', json.dumps(cfg.get('include_files', []), ensure_ascii=True))
 emit('PERF_INC_DIRS',  json.dumps(cfg.get('include_dirs', []), ensure_ascii=True))
 emit('PERF_LIBS',      json.dumps(cfg.get('libraries', []), ensure_ascii=True))
+emit('PERF_ARCH', arch)
 emit('COMPILER', comp)
 PYEOF
 )"
+
+# ---- Filter environment to exclude custom NCCL implementations ----
+filter_env() {
+    local var="$1"
+    local val="${!var:-}"
+    [ -z "$val" ] && return
+    local new_val=""
+    IFS=':' read -ra parts <<< "$val"
+    for part in "${parts[@]}"; do
+        local skip=0
+        case "$part" in
+            *coccl*|*zccl*) skip=1 ;;
+        esac
+        [ "$skip" -eq 0 ] && new_val="${new_val:+$new_val:}$part"
+    done
+    export "$var=$new_val"
+}
+
+if [ "$PERF_MODE" != "0" ] && { [ "$PERF_ARCH" = "nccl" ] || [ "$PERF_ARCH" = "rccl" ]; }; then
+    filter_env CPATH
+    filter_env C_INCLUDE_PATH
+    filter_env LIBRARY_PATH
+    filter_env LD_LIBRARY_PATH
+fi
 
 # ---- Mode dispatch ----------------------------------------------------------
 

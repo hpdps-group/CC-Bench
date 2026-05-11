@@ -28,21 +28,21 @@
 
    用户自定义实现请放在 your_wrapper_code/perf/ 下。
   */
-  "mode": 3,
+  "mode": 1,
 
   "library_paths": ["/path/to/libperf.so"],
 
-  "source_files": ["/public/home/konnyaku_cstdio/mybench/run_codes/wrappers/src/perf_helper.c",
-                  "/public/home/konnyaku_cstdio/mybench/run_codes/wrappers/src/mpi/perf_helper_mpi.c",
-                  "/public/home/konnyaku_cstdio/mybench/userconfig/wrapper_code_examples/perf/perfmpi/perfmpi.c"],
+  "source_files": ["run_codes/wrappers/src/perf_helper.c",
+                  "run_codes/wrappers/src/nccl/perf_helper_nccl.c"],
 
-  "source_dirs": [],
+  "source_dirs": ["userconfig/wrapper_code_examples/perf/perfcoccl"],
 
-  "include_files": ["/public/home/konnyaku_cstdio/mybench/run_codes/wrappers/include/perf_helper.h"],
+  "include_files": ["run_codes/wrappers/include/perf_helper.h",
+                    "run_codes/wrappers/include/nccl/perf_helper_nccl.h"],
 
-  "include_dirs": [],
+  "include_dirs": ["userconfig/wrapper_code_examples/perf/perfcoccl"],
 
   "libraries": [],
 
-  "output_name": "libtest_perf.so"
+  "output_name": "libcoccl_perf.so"
 }

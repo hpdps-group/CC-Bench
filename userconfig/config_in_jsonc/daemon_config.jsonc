@@ -14,7 +14,28 @@
   */
   "performance": {
     "enabled": true,
-    "selected_daemons": "cpu, ib, pcie",
+    "selected_daemons": "cpu, ib, pcie,gpu_nvidia",
     "poll_interval_sec": 1.0
+  },
+  "stress": {
+    /*
+      CPU Stress Daemon 配置。
+
+      激活方式: 将 "stress_cpu" 加入上方 selected_daemons,
+      例如: "cpu, ib, pcie, stress_cpu"
+
+      cpu_percent: CPU 占用率目标 (1-100), 默认 50。
+
+      GPU Stress Daemon (NVIDIA) 配置。
+
+      激活方式: 将 "stress_gpu_nvidia" 加入 selected_daemons,
+      例如: "cpu, ib, pcie, stress_cpu, stress_gpu_nvidia"
+
+      gpu_percent: GPU 占用率目标 (1-100), 默认 50。
+      依赖 NVIDIA 驱动和 CUDA 库 (daemon_stress_gpu_nvidia.c 编译时需要 -lcuda,
+      register_daemons.sh 会自动检测并添加)。
+    */
+    "cpu_percent": 30,
+    "gpu_percent": 30
   }
 }
