@@ -20,7 +20,7 @@
       "qos": "normal"
     },
     "resources": {
-      "nodes": 1,
+      "nodes": 2,
       "tasks_per_node": 4
     }
   }

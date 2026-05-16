@@ -30,6 +30,10 @@
   */
   "benchmark_type": "nccl_allreduce",
   "communication_arch": "nccl",
+  "debug": {
+    "gdb_enabled": false,
+    "gdb_path": "gdb"
+  },
 
   "data_source": {
     "type": "file",
@@ -41,6 +45,13 @@
       "per_rank_offset": true,
       "custom_offsets": []
     }
+  },
+
+  "output": {
+    "csv": false,
+    "csv_path": "results/pingpong.csv",
+    "binary": true,
+    "bin_path": "results/AllReduce"
   },
 
   "mpi_operation": {
@@ -60,8 +71,8 @@
 
   "message_sizes": {
     "mode": "range",
-    "min": 1024,
-    "max": 2048,
+    "min": 8388608,
+    "max": 33554432,
     "increment": 2,
     "increment_type": "multiply",
     "list": [
@@ -96,12 +107,5 @@
       268435456,
       536870912
     ]
-  },
-
-  "output": {
-    "csv": false,
-    "csv_path": "results/pingpong.csv",
-    "binary": true,
-    "bin_path": "results/AllReduce"
   }
 }

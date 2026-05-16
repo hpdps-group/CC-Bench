@@ -47,8 +47,12 @@ int main(int argc, char **argv) {
     MPI_Get_processor_name(my_name, &name_len);
 
     char *all_names = malloc((size_t)size * MPI_MAX_PROCESSOR_NAME);
-    MPI_Allgather(my_name, MPI_MAX_PROCESSOR_NAME, MPI_CHAR,
-                  all_names, MPI_MAX_PROCESSOR_NAME, MPI_CHAR, MPI_COMM_WORLD);
+    int _ret = MPI_Allgather(my_name, MPI_MAX_PROCESSOR_NAME, MPI_CHAR,
+                             all_names, MPI_MAX_PROCESSOR_NAME, MPI_CHAR, MPI_COMM_WORLD);
+    if (_ret != MPI_SUCCESS) {
+        fprintf(stderr, "[rank=%d] MPI_Allgather FAILED -- aborting\n", rank);
+        exit(1);
+    }
 
     /* ── Allocate max-size buffer ──────────────────────────────── */
     size_t max_sz = config.use_size_list
@@ -116,11 +120,27 @@ int main(int argc, char **argv) {
                 /* Warmup */
                 for (int w = 0; w < config.warmup_iterations; w++) {
                     if (rank == 0) {
-                        MPI_Send(buf, count, dtype, partner, TAG, MPI_COMM_WORLD);
-                        MPI_Recv(buf, count, dtype, partner, TAG, MPI_COMM_WORLD, &status);
+                        int _ret = MPI_Send(buf, count, dtype, partner, TAG, MPI_COMM_WORLD);
+                        if (_ret != MPI_SUCCESS) {
+                            fprintf(stderr, "[rank=%d] MPI_Send FAILED -- aborting\n", rank);
+                            exit(1);
+                        }
+                        _ret = MPI_Recv(buf, count, dtype, partner, TAG, MPI_COMM_WORLD, &status);
+                        if (_ret != MPI_SUCCESS) {
+                            fprintf(stderr, "[rank=%d] MPI_Recv FAILED -- aborting\n", rank);
+                            exit(1);
+                        }
                     } else {
-                        MPI_Recv(buf, count, dtype, 0, TAG, MPI_COMM_WORLD, &status);
-                        MPI_Send(buf, count, dtype, 0, TAG, MPI_COMM_WORLD);
+                        int _ret = MPI_Recv(buf, count, dtype, 0, TAG, MPI_COMM_WORLD, &status);
+                        if (_ret != MPI_SUCCESS) {
+                            fprintf(stderr, "[rank=%d] MPI_Recv FAILED -- aborting\n", rank);
+                            exit(1);
+                        }
+                        _ret = MPI_Send(buf, count, dtype, 0, TAG, MPI_COMM_WORLD);
+                        if (_ret != MPI_SUCCESS) {
+                            fprintf(stderr, "[rank=%d] MPI_Send FAILED -- aborting\n", rank);
+                            exit(1);
+                        }
                     }
                 }
 
@@ -132,18 +152,34 @@ int main(int argc, char **argv) {
                     if (rank == 0) {
                         double t0 = MPI_Wtime();
                         double t = MPI_Wtime();
-                        MPI_Send(buf, count, dtype, partner, TAG, MPI_COMM_WORLD);
+                        int _ret = MPI_Send(buf, count, dtype, partner, TAG, MPI_COMM_WORLD);
+                        if (_ret != MPI_SUCCESS) {
+                            fprintf(stderr, "[rank=%d] MPI_Send FAILED -- aborting\n", rank);
+                            exit(1);
+                        }
                         send0_total += MPI_Wtime() - t;
                         t = MPI_Wtime();
-                        MPI_Recv(buf, count, dtype, partner, TAG, MPI_COMM_WORLD, &status);
+                        _ret = MPI_Recv(buf, count, dtype, partner, TAG, MPI_COMM_WORLD, &status);
+                        if (_ret != MPI_SUCCESS) {
+                            fprintf(stderr, "[rank=%d] MPI_Recv FAILED -- aborting\n", rank);
+                            exit(1);
+                        }
                         recv0_total += MPI_Wtime() - t;
                         round_total += MPI_Wtime() - t0;
                     } else {
                         double t = MPI_Wtime();
-                        MPI_Recv(buf, count, dtype, 0, TAG, MPI_COMM_WORLD, &status);
+                        int _ret = MPI_Recv(buf, count, dtype, 0, TAG, MPI_COMM_WORLD, &status);
+                        if (_ret != MPI_SUCCESS) {
+                            fprintf(stderr, "[rank=%d] MPI_Recv FAILED -- aborting\n", rank);
+                            exit(1);
+                        }
                         recvP_total += MPI_Wtime() - t;
                         t = MPI_Wtime();
-                        MPI_Send(buf, count, dtype, 0, TAG, MPI_COMM_WORLD);
+                        _ret = MPI_Send(buf, count, dtype, 0, TAG, MPI_COMM_WORLD);
+                        if (_ret != MPI_SUCCESS) {
+                            fprintf(stderr, "[rank=%d] MPI_Send FAILED -- aborting\n", rank);
+                            exit(1);
+                        }
                         sendP_total += MPI_Wtime() - t;
                     }
                 }
@@ -153,10 +189,18 @@ int main(int argc, char **argv) {
                 if (rank == partner) {
                     partner_times[0] = recvP_total;
                     partner_times[1] = sendP_total;
-                    MPI_Send(partner_times, 2, MPI_DOUBLE, 0, TAG, MPI_COMM_WORLD);
+                    int _ret = MPI_Send(partner_times, 2, MPI_DOUBLE, 0, TAG, MPI_COMM_WORLD);
+                    if (_ret != MPI_SUCCESS) {
+                        fprintf(stderr, "[rank=%d] MPI_Send FAILED -- aborting\n", rank);
+                        exit(1);
+                    }
                 }
                 if (rank == 0) {
-                    MPI_Recv(partner_times, 2, MPI_DOUBLE, partner, TAG, MPI_COMM_WORLD, &status);
+                    int _ret = MPI_Recv(partner_times, 2, MPI_DOUBLE, partner, TAG, MPI_COMM_WORLD, &status);
+                    if (_ret != MPI_SUCCESS) {
+                        fprintf(stderr, "[rank=%d] MPI_Recv FAILED -- aborting\n", rank);
+                        exit(1);
+                    }
                 }
 
                 /* Rank 0 reports */

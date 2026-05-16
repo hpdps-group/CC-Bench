@@ -25,14 +25,13 @@
   "mode": 1,
 
   "library_paths": ["plugin_projects/ccl/coccl/build/lib/libnccl.so"],
-
   "source_files": [],
 
-  "source_dirs": ["userconfig/wrapper_code_examples/communication/zccl"],
+  "source_dirs": [],
 
   "include_files": [],
 
-  "include_dirs": ["plugin_projects/ccl/zccl/install/include"],
+  "include_dirs": [],
 
   "libraries": [],
 

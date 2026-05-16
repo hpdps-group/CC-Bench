@@ -96,11 +96,13 @@ if [ -n "${GDB:-}" ]; then
 fi
 LIBS="-lm -ldl"
 if [ "$ARCH" = "nccl" ]; then
-    for f in run_codes/wrappers/src/nccl/nccl_extensions.c; do
-        [ -f "$f" ] && FRAME_SRCS+=("$f")
-    done
-    # Link with libnccl for symbol resolution; LD_PRELOAD overrides at runtime.
     LIBS="-lm -ldl -lnccl"
+    # Link against libnccl_extensions.so so the linker can resolve
+    # ncclAllToAll etc.  At runtime LD_PRELOAD still takes priority,
+    # so alternative implementations can override by preloading first.
+    if [ -f "bin/libs/libnccl_extensions.so" ]; then
+        LIBS="$LIBS bin/libs/libnccl_extensions.so"
+    fi
 fi
 
 # If MPI is available on the system, enable HAVE_MPI so job_device_mapper
@@ -110,6 +112,22 @@ if command -v mpicc &>/dev/null; then
     CFLAGS="-DHAVE_MPI"
     LIBS="$LIBS $(mpicc --showme:link 2>/dev/null | tr ' ' '\n' | grep '^-[Ll]' | tr '\n' ' ')"
 
+fi
+
+# Build nccl_extensions.so (separate shared library, not baked into the binary)
+# so LD_PRELOAD can override ncclAllToAll etc. with alternative implementations.
+if [ "$ARCH" = "nccl" ] && [ -f "run_codes/wrappers/src/nccl/nccl_extensions.c" ]; then
+    echo "[build_tests] Building libnccl_extensions.so..."
+    mkdir -p "bin/libs"
+    PIC_FLAG="-fPIC"
+    [ "$CC" = "nvcc" ] && PIC_FLAG="-Xcompiler -fPIC"
+    $CC -O2 $PIC_FLAG -shared \
+        run_codes/wrappers/src/nccl/nccl_extensions.c \
+        -I "$INC_DIR" \
+        -I "run_codes/wrappers/include" \
+        $CFLAGS \
+        -o "bin/libs/libnccl_extensions.so"
+    echo "[build_tests] done: bin/libs/libnccl_extensions.so"
 fi
 
 echo "[build_tests] framework sources (${#FRAME_SRCS[@]}): ${FRAME_SRCS[*]}"

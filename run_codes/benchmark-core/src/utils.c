@@ -276,6 +276,8 @@ static void print_usage(const char *prog_name) {
     printf("  -b                Enable binary output (reference + user data dump)\n");
     printf("  -B PATH           Binary output base path (used as basename)\n");
     printf("  -L X,Y,Z          Explicit message size list (overrides -m)\n");
+    printf("  -S DIR            Save reference: run once, save result to DIR, exit\n");
+    printf("  -R DIR            Load reference from DIR instead of computing internally\n");
     printf("  -h                Print this help\n");
 }
 
@@ -299,7 +301,7 @@ test_config_t parse_arguments(int argc, char **argv) {
     };
 
     int opt;
-    while ((opt = getopt(argc, argv, "d:m:i:w:f:t:vMhe:p:co:L:bB:")) != -1) {
+    while ((opt = getopt(argc, argv, "d:m:i:w:f:t:vMhe:p:co:L:bB:S:R:")) != -1) {
         switch (opt) {
             case 'm': {
                 char *token = strtok(optarg, ":");
@@ -366,6 +368,15 @@ test_config_t parse_arguments(int argc, char **argv) {
             case 'B':
                 strncpy(config.bin_path, optarg, sizeof(config.bin_path) - 1);
                 config.bin_path[sizeof(config.bin_path) - 1] = '\0';
+                break;
+            case 'S':
+                strncpy(config.save_ref_path, optarg, sizeof(config.save_ref_path) - 1);
+                config.save_ref_path[sizeof(config.save_ref_path) - 1] = '\0';
+                break;
+            case 'R':
+                strncpy(config.ref_dir, optarg, sizeof(config.ref_dir) - 1);
+                config.ref_dir[sizeof(config.ref_dir) - 1] = '\0';
+                config.validate = 1;  /* -R implies validation */
                 break;
             case 'L': {
                 config.use_size_list = 1;

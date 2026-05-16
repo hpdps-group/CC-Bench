@@ -6,12 +6,19 @@
  *
  * RCCL implements the NCCL API — the wrapper function names are
  * the same as the NCCL base wrappers (base_ncclAllReduce, etc.).
+ *
+ * When using custom NCCL implementations (COCCL) that wrap ncclComm_t
+ * in an incompatible struct, register a separate base communicator via
+ * base_nccl_set_comm() — all base_* calls will use it instead of the
+ * caller-provided comm.
  */
 
 #ifndef RCCL_BASE_H
 #define RCCL_BASE_H
 
 #include <rccl.h>
+
+void base_nccl_set_comm(ncclComm_t comm);
 
 ncclResult_t base_ncclAllReduce(const void *sendbuff, void *recvbuff,
                                 size_t count, ncclDataType_t datatype,

@@ -14,7 +14,6 @@
 #include <string.h>
 #include "utils.h"
 #include "validation.h"
-#include "base_impl.h"
 #include "nccl/nccl_utils.h"
 
 #define ROOT 0
@@ -85,10 +84,16 @@ static void run_test_size(const nccl_test_context_t *ctx, size_t msg_size,
     /* 3. Warmup */
     cudaStreamSynchronize(ctx->stream);
     for (int i = 0; i < ctx->config.warmup_iterations; i++) {
-        ncclScatterv(d_send, sendcounts, displs, datatype,
-                     d_recv, recvcount, datatype,
-                     ROOT, d_sendcounts, d_displs,
-                     ctx->comm, ctx->stream);
+        ncclResult_t _ret = ncclScatterv(d_send, sendcounts, displs, datatype,
+                                         d_recv, recvcount, datatype,
+                                         ROOT, d_sendcounts, d_displs,
+                                         ctx->comm, ctx->stream);
+        if (_ret != ncclSuccess) {
+            fprintf(stderr, "[rank=%d] ncclScatterv FAILED at size=%zu iter=%d "
+                            "error=%d — aborting\n",
+                    ctx->rank, msg_size, i, (int)_ret);
+            exit(1);
+        }
         cudaStreamSynchronize(ctx->stream);
     }
 
@@ -106,10 +111,16 @@ static void run_test_size(const nccl_test_context_t *ctx, size_t msg_size,
         nccl_barrier((nccl_test_context_t *)ctx);
 
         cudaEventRecord(start, ctx->stream);
-        ncclScatterv(d_send, sendcounts, displs, datatype,
-                     d_recv, recvcount, datatype,
-                     ROOT, d_sendcounts, d_displs,
-                     ctx->comm, ctx->stream);
+        ncclResult_t _ret = ncclScatterv(d_send, sendcounts, displs, datatype,
+                                         d_recv, recvcount, datatype,
+                                         ROOT, d_sendcounts, d_displs,
+                                         ctx->comm, ctx->stream);
+        if (_ret != ncclSuccess) {
+            fprintf(stderr, "[rank=%d] ncclScatterv FAILED at size=%zu iter=%d "
+                            "error=%d — aborting\n",
+                    ctx->rank, msg_size, iter, (int)_ret);
+            exit(1);
+        }
         cudaEventRecord(stop, ctx->stream);
         cudaEventSynchronize(stop);
 
@@ -147,7 +158,7 @@ static void run_test_size(const nccl_test_context_t *ctx, size_t msg_size,
     }
 
     nccl_report_results(ctx, recv_bytes, recvcount, total_time_ms, iter_errors,
-                        ctx->config.validate ? &metrics_acc : NULL);
+                        ctx->config.validate ? &metrics_acc : NULL, 0.0);
 
     free(sendcounts);
     free(displs);

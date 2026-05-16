@@ -120,5 +120,7 @@ if [ "$COMM_MODE" = "2" ] && [ "$COMM_LIBPATHS" != "[]" ]; then
 fi
 
 mkdir -p bin/libs
-$COMPILER -O2 -fPIC -shared "${SRC_FILES[@]}" $INC_FLAGS $LIB_FLAGS $LINK_LIB -o "bin/libs/$COMM_OUTPUT"
+PIC_FLAG="-fPIC"
+[ "$COMPILER" = "nvcc" ] && PIC_FLAG="-Xcompiler -fPIC"
+$COMPILER -O2 $PIC_FLAG -shared "${SRC_FILES[@]}" $INC_FLAGS $LIB_FLAGS $LINK_LIB -o "bin/libs/$COMM_OUTPUT"
 echo "[build_comm] Built bin/libs/$COMM_OUTPUT"

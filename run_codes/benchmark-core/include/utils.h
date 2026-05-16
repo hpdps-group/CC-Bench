@@ -147,6 +147,10 @@ typedef struct {
     /* Data */
     pattern_type_t pattern_type;
     data_type_t data_type;
+
+    /* Reference save/load (-S DIR, -R DIR) */
+    char save_ref_path[512];   /* non-empty = save-ref mode: run once, save to dir */
+    char ref_dir[512];         /* non-empty = load reference from dir instead of computing */
 } test_config_t;
 
 test_config_t parse_arguments(int argc, char **argv);

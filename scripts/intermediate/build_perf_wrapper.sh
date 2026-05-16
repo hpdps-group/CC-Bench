@@ -140,6 +140,11 @@ fi
 LIB_FLAGS=""
 [ "$PERF_LIBS" != "[]" ] && LIB_FLAGS=$($PYTHON -c "import json, sys; print(' '.join(json.load(sys.stdin)))" <<< "$PERF_LIBS" 2>/dev/null) || true
 
+# NCCL/RCCL perf wrappers always need CUDA runtime (perf_helper_nccl.c uses cudaGetDevice etc.)
+if [ "$PERF_ARCH" = "nccl" ] || [ "$PERF_ARCH" = "rccl" ]; then
+    LIB_FLAGS="$LIB_FLAGS -lcudart"
+fi
+
 # Mode 2: link with prebuilt .so
 LINK_LIB=""
 if [ "$PERF_MODE" = "2" ] && [ "$PERF_LIBPATHS" != "[]" ]; then

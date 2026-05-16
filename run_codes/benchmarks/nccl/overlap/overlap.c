@@ -65,12 +65,23 @@ static void *comm_thread_fn(void *arg) {
     cudaEventCreate(&stop);
 
     cudaEventRecord(start, a->stream);
-    if (a->is_sender)
-        ncclSend(a->d_buf, a->count, a->dtype, a->partner,
-                 a->comm, a->stream);
-    else
-        ncclRecv(a->d_buf, a->count, a->dtype, a->partner,
-                 a->comm, a->stream);
+    if (a->is_sender) {
+        ncclResult_t _ret = ncclSend(a->d_buf, a->count, a->dtype, a->partner,
+                                     a->comm, a->stream);
+        if (_ret != ncclSuccess) {
+            fprintf(stderr, "[pid=%d] ncclSend FAILED at count=%zu error=%d — aborting\n",
+                    getpid(), a->count, (int)_ret);
+            exit(1);
+        }
+    } else {
+        ncclResult_t _ret = ncclRecv(a->d_buf, a->count, a->dtype, a->partner,
+                                     a->comm, a->stream);
+        if (_ret != ncclSuccess) {
+            fprintf(stderr, "[pid=%d] ncclRecv FAILED at count=%zu error=%d — aborting\n",
+                    getpid(), a->count, (int)_ret);
+            exit(1);
+        }
+    }
     cudaEventRecord(stop, a->stream);
     cudaEventSynchronize(stop);
 
@@ -178,10 +189,23 @@ static void run_test_size(int rank, int size,
             cudaEvent_t ev_s, ev_e;
             cudaEventCreate(&ev_s); cudaEventCreate(&ev_e);
             cudaEventRecord(ev_s, stream);
-            if (is_initiator)
-                ncclSend(d_buf, count, dtype, partner, comm, stream);
-            else
-                ncclRecv(d_buf, count, dtype, partner, comm, stream);
+            if (is_initiator) {
+                ncclResult_t _ret = ncclSend(d_buf, count, dtype, partner, comm, stream);
+                if (_ret != ncclSuccess) {
+                    fprintf(stderr, "[rank=%d] ncclSend FAILED at count=%d iter=%d "
+                                    "error=%d — aborting\n",
+                            rank, count, iter, (int)_ret);
+                    exit(1);
+                }
+            } else {
+                ncclResult_t _ret = ncclRecv(d_buf, count, dtype, partner, comm, stream);
+                if (_ret != ncclSuccess) {
+                    fprintf(stderr, "[rank=%d] ncclRecv FAILED at count=%d iter=%d "
+                                    "error=%d — aborting\n",
+                            rank, count, iter, (int)_ret);
+                    exit(1);
+                }
+            }
             cudaEventRecord(ev_e, stream);
             cudaEventSynchronize(ev_e);
             float ms;
@@ -286,7 +310,7 @@ static void run_test_size(int rank, int size,
 
 /* ── NCCL bootstrap (no MPI) ────────────────────────────────────────────── */
 
-#define NCCL_ID_FILE "/tmp/nccl_bench_overlap_id"
+#define NCCL_ID_FILE "nccl_id_file/nccl_bench_overlap_id"
 
 static ncclComm_t init_nccl(int rank, int size) {
     ncclUniqueId id;

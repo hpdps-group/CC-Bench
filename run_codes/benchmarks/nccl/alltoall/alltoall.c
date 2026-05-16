@@ -1,8 +1,9 @@
 /**
- * NCCL AlltoAll correctness and performance test.
+ * NCCL AllToAll correctness and performance test.
  *
  * Each rank exchanges data with every other rank (equal-sized chunks).
- * No base_ncclAllToAll — validated against CPU-computed reference.
+ * Reference computed on CPU via dummy_alltoall — no NCCL calls, safe
+ * under LD_PRELOAD interception.
  */
 
 #include <nccl.h>
@@ -12,9 +13,9 @@
 #include <string.h>
 #include "utils.h"
 #include "validation.h"
-#include "base_impl.h"
 #include "nccl/nccl_utils.h"
 #include "binary_output.h"
+#include "dummy_collectives.h"
 
 /* ── Forward declaration (from plain_nccl_compress.c) ─────────────────── */
 extern int ncclAllToAll(const void *sendbuf, size_t sendcount, ncclDataType_t sendtype,
@@ -36,31 +37,30 @@ static void run_test_size(const nccl_test_context_t *ctx, size_t msg_size,
     nccl_load_input(ctx, h_send, send_bytes, datatype);
     cudaMemcpy(d_send, h_send, send_bytes, cudaMemcpyHostToDevice);
 
-    /* 2. CPU reference: for each source rank s, generate its sendbuf
-     *    with init_buffer_pattern and extract our chunk. */
-    if (ctx->config.validate || ctx->config.save_binary) {
-        data_type_t dt = nccl_to_data_type(datatype);
-        void *rank_buf = malloc(send_bytes);
-        for (int s = 0; s < ctx->size; s++) {
-            init_buffer_pattern(rank_buf, total_count, dt, ctx->config.pattern_type, s);
-            memcpy((char*)h_ref + (size_t)s * count_per * esz,
-                   (char*)rank_buf + (size_t)ctx->rank * count_per * esz,
-                   send_bytes / ctx->size);
-        }
-        free(rank_buf);
-    }
+    /* 2. CPU reference (no NCCL call — safe under LD_PRELOAD) */
+    data_type_t dt = nccl_to_data_type(datatype);
+    dummy_alltoall(h_ref,
+                   ctx->config.input_file,
+                   dt, ctx->config.pattern_type,
+                   count_per, ctx->size, ctx->rank);
 
     /* 2a. Allocate user accumulator for binary output */
-    data_type_t dtype_gen = nccl_to_data_type(datatype);
-    size_t recv_bytes = (size_t)total_count * esz;
-    void *user_accum = ctx->config.save_binary || ctx->config.validate ? calloc(1, recv_bytes) : NULL;
+    size_t recv_bytes = send_bytes;
+    void *user_accum = ctx->config.save_binary || ctx->config.validate
+                       ? calloc(1, recv_bytes) : NULL;
 
     /* 3. Warmup */
     cudaStreamSynchronize(ctx->stream);
     for (int i = 0; i < ctx->config.warmup_iterations; i++) {
-        ncclAllToAll(d_send, count_per, datatype,
-                     d_recv, count_per, datatype,
-                     ctx->comm, ctx->stream);
+        ncclResult_t _ret = ncclAllToAll(d_send, count_per, datatype,
+                                         d_recv, count_per, datatype,
+                                         ctx->comm, ctx->stream);
+        if (_ret != ncclSuccess) {
+            fprintf(stderr, "[rank=%d] ncclAllToAll FAILED at size=%zu iter=%d "
+                            "error=%d -- aborting\n",
+                    ctx->rank, msg_size, i, (int)_ret);
+            exit(1);
+        }
         cudaStreamSynchronize(ctx->stream);
     }
 
@@ -79,9 +79,15 @@ static void run_test_size(const nccl_test_context_t *ctx, size_t msg_size,
         nccl_barrier((nccl_test_context_t *)ctx);
 
         cudaEventRecord(start, ctx->stream);
-        ncclAllToAll(d_send, count_per, datatype,
-                     d_recv, count_per, datatype,
-                     ctx->comm, ctx->stream);
+        ncclResult_t _ret = ncclAllToAll(d_send, count_per, datatype,
+                                         d_recv, count_per, datatype,
+                                         ctx->comm, ctx->stream);
+        if (_ret != ncclSuccess) {
+            fprintf(stderr, "[rank=%d] ncclAllToAll FAILED at size=%zu iter=%d "
+                            "error=%d -- aborting\n",
+                    ctx->rank, msg_size, iter, (int)_ret);
+            exit(1);
+        }
         cudaEventRecord(stop, ctx->stream);
         cudaEventSynchronize(stop);
 
@@ -95,7 +101,7 @@ static void run_test_size(const nccl_test_context_t *ctx, size_t msg_size,
                 cudaMemcpy(h_recv, d_recv, send_bytes, cudaMemcpyDeviceToHost);
                 cudaStreamSynchronize(ctx->stream);
             }
-            binary_accumulate(user_accum, h_recv, total_count, dtype_gen);
+            binary_accumulate(user_accum, h_recv, total_count, dt);
         }
 
         if (ctx->config.validate) {
@@ -103,7 +109,7 @@ static void run_test_size(const nccl_test_context_t *ctx, size_t msg_size,
             cudaStreamSynchronize(ctx->stream);
             validation_result_t vm = validate_result(
                 h_recv, h_ref, total_count,
-                nccl_to_data_type(datatype), ctx->config.tolerance,
+                dt, ctx->config.tolerance,
                 ctx->config.metrics_mask);
             if (!vm.correct) iter_errors++;
             for (int m = 0; m < MAX_METRICS; m++) {
@@ -130,7 +136,7 @@ static void run_test_size(const nccl_test_context_t *ctx, size_t msg_size,
     /* 5a. Average and write binary output */
     if (user_accum) {
         if (ctx->config.iterations > 0)
-            binary_average(user_accum, total_count, dtype_gen, ctx->config.iterations);
+            binary_average(user_accum, total_count, dt, ctx->config.iterations);
         write_binary_multi(ctx->config.bin_path, "reference",
                            (const char *)h_ref + ctx->rank * msg_size, msg_size,
                            ctx->rank, ctx->size);
@@ -140,8 +146,12 @@ static void run_test_size(const nccl_test_context_t *ctx, size_t msg_size,
         free(user_accum);
     }
 
+    /* 6. Bandwidth: each rank sends msg_size to (n-1) peers */
+    double avg_sec = (double)total_time_ms / ctx->config.iterations / 1000.0;
+    double bw = (avg_sec > 0.0) ? (msg_size * (ctx->size - 1) / avg_sec) / 1.0e9 : 0.0;
+
     nccl_report_results(ctx, msg_size, count_per, total_time_ms, iter_errors,
-                        ctx->config.validate ? &metrics_acc : NULL);
+                        ctx->config.validate ? &metrics_acc : NULL, bw);
 }
 
 int main(int argc, char **argv)

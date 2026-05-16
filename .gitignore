@@ -4,3 +4,5 @@ scripts/run/
 daemon_signals/
 results/
 dataset/
+nccl_id_file/
+runtime_files/

@@ -20,9 +20,9 @@
   /* Wrapper 通用环境变量 */
   "MPI_TOLERANCE": "1e-5",
   "MPI_BLOCK_SIZE": "1024",
-  "NCCL_DEBUG":"INFO",
-  "NCCL_DEBUG_SUBSYS": "ALL",
-  "CUDA_LAUNCH_BLOCKING": "1",
+  /* "NCCL_DEBUG":"INFO",
+  "NCCL_DEBUG_SUBSYS": "NET",
+  "CUDA_LAUNCH_BLOCKING": "1",    */
 
   /* UCX / InfiniBand 传输配置 */
   "UCX_TLS": "rc,self,sm",
@@ -53,5 +53,69 @@
     解析器 parse_env_int_array() 天然支持任意长度一维展开。
   */
   "ALLGATHERV_WEIGHTS": "1,2,3,4",
-  "SCATTERV_WEIGHTS": "4,3,2,1"
+  "SCATTERV_WEIGHTS": "4,3,2,1",
+
+  /* ================================================================
+     UCCL-collective 配置
+
+     UCCL-collective（又称 UCCL-Tran）是 NCCL 的 NET plugin，
+     通过 NCCL_NET_PLUGIN 加载，不需要 LD_PRELOAD。
+
+     使用步骤：
+       1. 编译 UCCL → 产出 libnccl-net-uccl.so
+       2. communication_lib_selection.jsonc 设 mode=0（bare，不加 LD_PRELOAD）
+       3. 设置 NCCL_NET_PLUGIN 指向 libnccl-net-uccl.so
+       4. 使用系统 NCCL（不要 LD_PRELOAD COCCL）
+     ================================================================ */
+
+  /* ── UCCL NET Plugin 路径 ───────────────────────────────────── */
+  /* "LD_LIBRARY_PATH": "/data/run01/scyb672/fhz/mybench/bin/libs:$LD_LIBRARY_PATH", */
+  /* "NCCL_NET_PLUGIN": "uccl",  */
+
+  /* ── UCCL 网卡/控制网口 ─────────────────────────────────────── */
+  //  "UCCL_DEBUG_VLOG_LEVEL": "1",
+ /* "UCCL_DEBUG":"ERROR",
+  "UCCL_DEBUG_SUBSYS": "ERROR", 
+  "UCCL_P2P_LOG_LEVEL": "ERROR",
+  "UCCL_P2P_COMPRESS_STRATEGY":"split_encode",
+  "UCCL_P2P_POLL_TIMEOUT_MS": "60000",
+  "UCCL_IB_HCA": "mlx5_0,mlx5_1,mlx5_4,mlx5_5",
+    "UCCL_SOCKET_IFNAME": "bond0",  */
+
+  /* ── UCCL 调优参数（可选）───────────────────────────────────── */
+  /* "UCCL_CHUNK_SIZE_KB": "64" */
+  /* "UCCL_NUM_ENGINES": "4" */
+  /* "UCCL_PORT_ENTROPY": "32" */
+
+  /* ================================================================
+     COCCL 压缩配置（已启用，LD_PRELOAD 模式）
+
+     communication_lib_selection.jsonc:
+       - mode=1
+       - library_paths = plugin_projects/ccl/coccl/build/lib/libnccl.so
+     ================================================================ */
+  
+  "NCCL_ENABLE_COMPRESS": "1",
+  "NCCL_COMPRESSORS": "sdp4bit",
+  "NCCL_COMPRESSORS_LIB_PATH": "/data/run01/scyb672/fhz/mybench/plugin_projects/ccl/coccl/build/obj/device/compress/libcompress",
+  "NCCL_COMPRESSORS_CONFIG_PATH": "/data/run01/scyb672/fhz/mybench/plugin_projects/ccl/coccl/src/device/compress/configs",
+  "NCCL_ENABLE_ALLTOALL_COMPRESS": "1",
+  "NCCL_ALLTOALL_COMPRESSORS": "sdp4bit",
+  "NCCL_ALLTOALL_INTER_COMPRESSORS": "sdp4bit",
+  "NCCL_ENABLE_ALLREDUCE_COMPRESS": "1",
+  "NCCL_ALLREDUCE_COMPRESSORS": "sdp4bit",
+  "NCCL_ALLREDUCE_INTER_COMPRESSORS": "sdp4bit",
+  "NCCL_ENABLE_ALLGATHER_COMPRESS": "1",
+  "NCCL_ALLGATHER_COMPRESSORS": "sdp4bit",
+  "NCCL_ALLGATHER_INTER_COMPRESSORS": "sdp4bit",
+  "NCCL_ENABLE_REDUCESCATTER_COMPRESS": "1",
+  "NCCL_REDUCESCATTER_COMPRESSORS": "sdp4bit",
+  "NCCL_REDUCESCATTER_INTER_COMPRESSORS": "sdp4bit",
+  "NCCL_ENABLE_SENDRECV_COMPRESS": "1",
+  "NCCL_SENDRECV_COMPRESSORS": "sdp4bit",
+  "NCCL_SENDRECV_BWD_COMPRESSORS": "sdp4bit",
+  "NCCL_ENABLE_CHECK": "0",
+  "NCCL_ENABLE_TIMER": "0"
+  
+  /* "COMPRESS_ENABLE_THRESHOLD": "1048576" */
 }

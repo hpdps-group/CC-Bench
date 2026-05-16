@@ -85,11 +85,20 @@ static void *comm_thread_fn(void *arg) {
     pthread_barrier_wait(&s_barrier);
 
     double t0 = MPI_Wtime();
-    if (a->is_sender)
-        MPI_Send(a->buf, a->count, a->dtype, a->partner, a->tag, MPI_COMM_WORLD);
-    else
-        MPI_Recv(a->buf, a->count, a->dtype, a->partner, a->tag,
-                 MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    if (a->is_sender) {
+        int _ret = MPI_Send(a->buf, a->count, a->dtype, a->partner, a->tag, MPI_COMM_WORLD);
+        if (_ret != MPI_SUCCESS) {
+            fprintf(stderr, "[comm_thread partner=%d] MPI_Send FAILED -- aborting\n", a->partner);
+            exit(1);
+        }
+    } else {
+        int _ret = MPI_Recv(a->buf, a->count, a->dtype, a->partner, a->tag,
+                            MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        if (_ret != MPI_SUCCESS) {
+            fprintf(stderr, "[comm_thread partner=%d] MPI_Recv FAILED -- aborting\n", a->partner);
+            exit(1);
+        }
+    }
     double t1 = MPI_Wtime();
 
     *a->t_comm = t1 - t0;
@@ -165,13 +174,21 @@ static void run_test_size(int rank, int size,
         PMPI_Barrier(MPI_COMM_WORLD);
         if (is_initiator) {
             double t0 = MPI_Wtime();
-            MPI_Send(sendbuf, count, datatype, partner, tag, MPI_COMM_WORLD);
+            int _ret = MPI_Send(sendbuf, count, datatype, partner, tag, MPI_COMM_WORLD);
+            if (_ret != MPI_SUCCESS) {
+                fprintf(stderr, "[rank=%d] MPI_Send FAILED -- aborting\n", rank);
+                exit(1);
+            }
             double t1 = MPI_Wtime();
             t_send_pure += t1 - t0;
         } else {
             double t0 = MPI_Wtime();
-            MPI_Recv(recvbuf, count, datatype, partner, tag,
-                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            int _ret = MPI_Recv(recvbuf, count, datatype, partner, tag,
+                                MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            if (_ret != MPI_SUCCESS) {
+                fprintf(stderr, "[rank=%d] MPI_Recv FAILED -- aborting\n", rank);
+                exit(1);
+            }
             double t1 = MPI_Wtime();
             t_recv_pure += t1 - t0;
         }

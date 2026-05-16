@@ -24,6 +24,13 @@ typedef struct CUStream_st *cudaStream_t;
 /* ── NCCL type stubs (no libnccl dependency) ──────────────────── */
 typedef struct ncclComm *ncclComm_t;
 
+/* ── ncclUniqueId stub (same layout as nccl.h) ──────────────────── */
+/* Guarded so the stub does not conflict if nccl.h is also included. */
+#ifndef NCCL_UNIQUE_ID_BYTES
+#define NCCL_UNIQUE_ID_BYTES 128
+typedef struct { char internal[NCCL_UNIQUE_ID_BYTES]; } ncclUniqueId;
+#endif
+
 typedef enum {
     ncclSuccess             = 0,
     ncclUnhandledCudaError  = 1,
@@ -93,13 +100,22 @@ static inline void *perf_nccl_get_real(const char *name) {
 perf_state_t *perf_nccl_get_tls(void);
 void          perf_nccl_flush(void);
 
+/* ── Override the comm used for node-map AllGather ────────────────────
+ *
+ * When a custom NCCL (e.g. COCCL) wraps ncclComm_t, the node-map
+ * AllGather must use a real NCCL comm (the base comm) instead of
+ * the wrapped user comm to avoid struct-layout mismatch.
+ *
+ * The benchmark initialises this automatically via perf_nccl_init_node_map().
+ * when the perf wrapper is loaded.  Pass NULL to reset to default.   */
+void perf_nccl_set_node_map_comm(ncclComm_t comm);
+
 /* ── GPU topology helpers (backed by perf_helper_nccl.c) ──────────── */
 
 /**
- * Initialise the GPU node map.
+ * Initialise the node map.
  *
- * Reads the current GPU's PCI bus ID and exchanges it across all ranks
- * using NCCL AllGather (via ncclComm_t).  After this call,
+ * Exchanges hostnames across all ranks via filesystem.  After this call
  * perf_nccl_is_intra() can be queried.
  *
  * Safe to call multiple times — second call is a no-op.

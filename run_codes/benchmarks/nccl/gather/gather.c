@@ -12,9 +12,9 @@
 #include <string.h>
 #include "utils.h"
 #include "validation.h"
-#include "base_impl.h"
 #include "nccl/nccl_utils.h"
 #include "binary_output.h"
+#include "dummy_collectives.h"
 
 #define ROOT 0
 
@@ -39,15 +39,11 @@ static void run_test_size(const nccl_test_context_t *ctx, size_t msg_size,
     nccl_load_input(ctx, h_send, send_bytes, datatype);
     cudaMemcpy(d_send, h_send, send_bytes, cudaMemcpyHostToDevice);
 
-    /* 2. CPU reference: generate each rank's data with init_buffer_pattern */
+    /* 2. CPU reference (dummy_gather loads all ranks' data from file or pattern) */
     if ((ctx->config.validate || ctx->config.save_binary) && ctx->rank == ROOT) {
         data_type_t dt = nccl_to_data_type(datatype);
-        void *tmp = malloc(send_bytes);
-        for (int r = 0; r < ctx->size; r++) {
-            init_buffer_pattern(tmp, count_per, dt, ctx->config.pattern_type, r);
-            memcpy((char*)h_ref + (size_t)r * count_per * esz, tmp, send_bytes);
-        }
-        free(tmp);
+        dummy_gather(h_ref, ctx->config.input_file, dt, ctx->config.pattern_type,
+                     count_per, ctx->size, ROOT);
     }
 
     /* 2a. Allocate user accumulator for binary output */
@@ -57,9 +53,15 @@ static void run_test_size(const nccl_test_context_t *ctx, size_t msg_size,
     /* 3. Warmup */
     cudaStreamSynchronize(ctx->stream);
     for (int i = 0; i < ctx->config.warmup_iterations; i++) {
-        ncclGather(d_send, count_per, datatype,
-                   d_recv, count_per, datatype,
-                   ROOT, ctx->comm, ctx->stream);
+        ncclResult_t _ret = ncclGather(d_send, count_per, datatype,
+                                       d_recv, count_per, datatype,
+                                       ROOT, ctx->comm, ctx->stream);
+        if (_ret != ncclSuccess) {
+            fprintf(stderr, "[rank=%d] ncclGather FAILED at size=%zu iter=%d "
+                            "error=%d -- aborting\n",
+                    ctx->rank, msg_size, i, (int)_ret);
+            exit(1);
+        }
         cudaStreamSynchronize(ctx->stream);
     }
 
@@ -77,9 +79,15 @@ static void run_test_size(const nccl_test_context_t *ctx, size_t msg_size,
         nccl_barrier((nccl_test_context_t *)ctx);
 
         cudaEventRecord(start, ctx->stream);
-        ncclGather(d_send, count_per, datatype,
-                   d_recv, count_per, datatype,
-                   ROOT, ctx->comm, ctx->stream);
+        ncclResult_t _ret = ncclGather(d_send, count_per, datatype,
+                                       d_recv, count_per, datatype,
+                                       ROOT, ctx->comm, ctx->stream);
+        if (_ret != ncclSuccess) {
+            fprintf(stderr, "[rank=%d] ncclGather FAILED at size=%zu iter=%d "
+                            "error=%d -- aborting\n",
+                    ctx->rank, msg_size, iter, (int)_ret);
+            exit(1);
+        }
         cudaEventRecord(stop, ctx->stream);
         cudaEventSynchronize(stop);
 
@@ -136,10 +144,14 @@ static void run_test_size(const nccl_test_context_t *ctx, size_t msg_size,
         free(user_accum);
     }
 
+    /* 6. Bandwidth: each rank sends msg_size to root */
+    double avg_sec = (double)total_time_ms / ctx->config.iterations / 1000.0;
+    double bw = (avg_sec > 0.0) ? (msg_size / avg_sec) / 1.0e9 : 0.0;
+
     /* Root reports */
     if (ctx->rank == ROOT)
         nccl_report_results(ctx, msg_size, count_per, total_time_ms, iter_errors,
-                            ctx->config.validate ? &metrics_acc : NULL);
+                            ctx->config.validate ? &metrics_acc : NULL, bw);
 }
 
 int main(int argc, char **argv)

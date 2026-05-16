@@ -50,6 +50,23 @@
 static perf_state_t *get_state(void)  { return perf_nccl_get_tls(); }
 
 /* ═══════════════════════════════════════════════════════════════════
+ * Group 0 — NCCL init: intercept ncclCommInitRank to initialise the
+ *            GPU node map BEFORE any collective / P2P operation.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+ncclResult_t ncclCommInitRank(ncclComm_t *comm, int nranks,
+                               ncclUniqueId commId, int myrank) {
+  static ncclResult_t (*real)(ncclComm_t *, int, ncclUniqueId, int) = NULL;
+  if (!real) real = perf_nccl_get_real("ncclCommInitRank");
+  if (!real) return ncclInternalError;
+
+  ncclResult_t ret = real(comm, nranks, commId, myrank);
+  if (ret == ncclSuccess)
+    perf_nccl_init_node_map(*comm);  /* safe: comm is ready, no outer collective */
+  return ret;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
  * NCCL collectives intercepted at the C ABI layer
  * ═══════════════════════════════════════════════════════════════════ */
 
@@ -61,7 +78,6 @@ ncclResult_t ncclSend(const void *sendbuff, size_t count,
   if (!real) real = perf_nccl_get_real("ncclSend");
   if (!real) return ncclInternalError;
 
-  perf_nccl_init_node_map(comm);
   double t0 = perf_get_time();
   ncclResult_t ret = real(sendbuff, count, datatype, peer, comm, stream);
   double t1 = perf_get_time();
@@ -84,7 +100,6 @@ ncclResult_t ncclRecv(void *recvbuff, size_t count,
   if (!real) real = perf_nccl_get_real("ncclRecv");
   if (!real) return ncclInternalError;
 
-  perf_nccl_init_node_map(comm);
   double t0 = perf_get_time();
   ncclResult_t ret = real(recvbuff, count, datatype, peer, comm, stream);
   double t1 = perf_get_time();

@@ -18,6 +18,9 @@
 /* ── dlopen handle and resolved function pointers ─────────────────────── */
 static void *g_handle = NULL;
 
+/* Separate base communicator — see nccl_base.h for rationale. */
+static ncclComm_t g_base_comm = NULL;
+
 static ncclResult_t (*real_ncclAllReduce)(const void *, void *, size_t,
                                           ncclDataType_t, ncclRedOp_t,
                                           ncclComm_t, cudaStream_t) = NULL;
@@ -97,13 +100,22 @@ int load_base_impl(const char *state_path)
 }
 
 /* ── Wrapper functions ────────────────────────────────────────────────── */
+/* Note: when g_base_comm is set, use it instead of the caller-provided
+ * comm to avoid struct-layout mismatches with custom implementations. */
+
+void base_nccl_set_comm(ncclComm_t comm) { g_base_comm = comm; }
+
+static inline ncclComm_t base_comm(ncclComm_t user_comm) {
+  return g_base_comm ? g_base_comm : user_comm;
+}
 
 ncclResult_t base_ncclAllReduce(const void *sendbuff, void *recvbuff,
                                 size_t count, ncclDataType_t datatype,
                                 ncclRedOp_t op, ncclComm_t comm,
                                 cudaStream_t stream)
 {
-    return real_ncclAllReduce(sendbuff, recvbuff, count, datatype, op, comm, stream);
+    return real_ncclAllReduce(sendbuff, recvbuff, count, datatype, op,
+                              base_comm(comm), stream);
 }
 
 ncclResult_t base_ncclBroadcast(const void *sendbuff, void *recvbuff,
@@ -111,7 +123,8 @@ ncclResult_t base_ncclBroadcast(const void *sendbuff, void *recvbuff,
                                 int root, ncclComm_t comm,
                                 cudaStream_t stream)
 {
-    return real_ncclBroadcast(sendbuff, recvbuff, count, datatype, root, comm, stream);
+    return real_ncclBroadcast(sendbuff, recvbuff, count, datatype, root,
+                              base_comm(comm), stream);
 }
 
 ncclResult_t base_ncclReduce(const void *sendbuff, void *recvbuff,
@@ -119,14 +132,16 @@ ncclResult_t base_ncclReduce(const void *sendbuff, void *recvbuff,
                              ncclRedOp_t op, int root,
                              ncclComm_t comm, cudaStream_t stream)
 {
-    return real_ncclReduce(sendbuff, recvbuff, count, datatype, op, root, comm, stream);
+    return real_ncclReduce(sendbuff, recvbuff, count, datatype, op, root,
+                           base_comm(comm), stream);
 }
 
 ncclResult_t base_ncclAllGather(const void *sendbuff, void *recvbuff,
                                 size_t sendcount, ncclDataType_t datatype,
                                 ncclComm_t comm, cudaStream_t stream)
 {
-    return real_ncclAllGather(sendbuff, recvbuff, sendcount, datatype, comm, stream);
+    return real_ncclAllGather(sendbuff, recvbuff, sendcount, datatype,
+                              base_comm(comm), stream);
 }
 
 ncclResult_t base_ncclReduceScatter(const void *sendbuff, void *recvbuff,
@@ -134,19 +149,20 @@ ncclResult_t base_ncclReduceScatter(const void *sendbuff, void *recvbuff,
                                     ncclRedOp_t op, ncclComm_t comm,
                                     cudaStream_t stream)
 {
-    return real_ncclReduceScatter(sendbuff, recvbuff, recvcount, datatype, op, comm, stream);
+    return real_ncclReduceScatter(sendbuff, recvbuff, recvcount, datatype, op,
+                                  base_comm(comm), stream);
 }
 
 ncclResult_t base_ncclSend(const void *sendbuff, size_t count,
                            ncclDataType_t datatype, int peer,
                            ncclComm_t comm, cudaStream_t stream)
 {
-    return real_ncclSend(sendbuff, count, datatype, peer, comm, stream);
+    return real_ncclSend(sendbuff, count, datatype, peer, base_comm(comm), stream);
 }
 
 ncclResult_t base_ncclRecv(void *recvbuff, size_t count,
                            ncclDataType_t datatype, int peer,
                            ncclComm_t comm, cudaStream_t stream)
 {
-    return real_ncclRecv(recvbuff, count, datatype, peer, comm, stream);
+    return real_ncclRecv(recvbuff, count, datatype, peer, base_comm(comm), stream);
 }

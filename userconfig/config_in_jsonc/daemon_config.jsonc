@@ -14,7 +14,7 @@
   */
   "performance": {
     "enabled": true,
-    "selected_daemons": "cpu, ib, pcie,gpu_nvidia",
+    "selected_daemons": "cpu, ib, pcie, gpu_nvidia",
     "poll_interval_sec": 1.0
   },
   "stress": {

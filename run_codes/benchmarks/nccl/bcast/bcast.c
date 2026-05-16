@@ -1,7 +1,8 @@
 /**
  * NCCL Broadcast correctness and performance test.
  *
- * Tests ncclBroadcast against base_ncclBroadcast (real NCCL via dlopen).
+ * Tests ncclBroadcast for correctness and performance.
+ * Reference computed on CPU via dummy_bcast.
  */
 
 #include <nccl.h>
@@ -11,17 +12,16 @@
 #include <string.h>
 #include "utils.h"
 #include "validation.h"
-#include "base_impl.h"
-#include "nccl/nccl_base.h"
 #include "nccl/nccl_utils.h"
 #include "binary_output.h"
+#include "dummy_collectives.h"
 
 #define ROOT 0
 
 static void run_test_size(const nccl_test_context_t *ctx, size_t msg_size,
                           ncclDataType_t datatype,
                           void *h_buf, void *h_ref,
-                          void *d_buf, void *d_ref)
+                          void *d_buf)
 {
     size_t esz = nccl_dtype_size(datatype);
     int count = (int)(msg_size / esz);
@@ -29,33 +29,37 @@ static void run_test_size(const nccl_test_context_t *ctx, size_t msg_size,
     size_t bytes = (size_t)count * esz;
 
     /* 1. Load input data on root */
-    if (ctx->rank == ROOT)
+    if (ctx->rank == ROOT) {
         nccl_load_input(ctx, h_buf, bytes, datatype);
-    if (ctx->rank == ROOT)
-        memcpy(h_ref, h_buf, bytes);
-
+        cudaMemcpy(d_buf, h_buf, bytes, cudaMemcpyHostToDevice);
+    }
     nccl_barrier((nccl_test_context_t *)ctx);
-    cudaMemcpy(d_buf, h_buf, bytes, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_ref, h_ref, bytes, cudaMemcpyHostToDevice);
 
-    /* 2. Warmup */
+    /* 2. CPU reference: broadcast root's data to all ranks */
+    dummy_bcast(h_ref,
+                ctx->config.input_file,
+                nccl_to_data_type(datatype),
+                ctx->config.pattern_type,
+                count, ctx->size, ROOT);
+
+    /* 3. Warmup */
     for (int i = 0; i < ctx->config.warmup_iterations; i++) {
-        ncclBroadcast(d_buf, d_buf, count, datatype, ROOT,
-                      ctx->comm, ctx->stream);
+        ncclResult_t _ret = ncclBroadcast(d_buf, d_buf, count, datatype, ROOT,
+                                          ctx->comm, ctx->stream);
+        if (_ret != ncclSuccess) {
+            fprintf(stderr, "[rank=%d] ncclBroadcast FAILED at size=%zu iter=%d "
+                            "error=%d -- aborting\n",
+                    ctx->rank, bytes, i, (int)_ret);
+            exit(1);
+        }
         cudaStreamSynchronize(ctx->stream);
     }
 
-    /* 3. Reference result */
-    base_ncclBroadcast(d_ref, d_ref, count, datatype, ROOT,
-                       ctx->comm, ctx->stream);
-    cudaStreamSynchronize(ctx->stream);
-    cudaMemcpy(h_ref, d_ref, bytes, cudaMemcpyDeviceToHost);
-
-    /* 3a. Allocate user accumulator for binary output */
+    /* 4. Allocate user accumulator for binary output */
     data_type_t dtype_gen = nccl_to_data_type(datatype);
     void *user_accum = ctx->config.save_binary ? calloc(1, bytes) : NULL;
 
-    /* 4. Main timing and validation loop */
+    /* 5. Main timing and validation loop */
     float total_time_ms = 0.0f;
     int iter_errors = 0;
     validation_result_t metrics_acc = {0};
@@ -72,8 +76,14 @@ static void run_test_size(const nccl_test_context_t *ctx, size_t msg_size,
         nccl_barrier((nccl_test_context_t *)ctx);
 
         cudaEventRecord(start, ctx->stream);
-        ncclBroadcast(d_buf, d_buf, count, datatype, ROOT,
-                      ctx->comm, ctx->stream);
+        ncclResult_t _ret = ncclBroadcast(d_buf, d_buf, count, datatype, ROOT,
+                                          ctx->comm, ctx->stream);
+        if (_ret != ncclSuccess) {
+            fprintf(stderr, "[rank=%d] ncclBroadcast FAILED at size=%zu iter=%d "
+                            "error=%d -- aborting\n",
+                    ctx->rank, bytes, iter, (int)_ret);
+            exit(1);
+        }
         cudaEventRecord(stop, ctx->stream);
         cudaEventSynchronize(stop);
 
@@ -108,7 +118,7 @@ static void run_test_size(const nccl_test_context_t *ctx, size_t msg_size,
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
 
-    /* 5. Average metrics */
+    /* 6. Average metrics */
     if (ctx->config.validate && ctx->config.iterations > 0) {
         metrics_acc.correct = (iter_errors == 0);
         for (int m = 0; m < MAX_METRICS; m++) {
@@ -120,7 +130,7 @@ static void run_test_size(const nccl_test_context_t *ctx, size_t msg_size,
                    bytes, iter_errors, ctx->config.iterations);
     }
 
-    /* 5a. Average and write binary output */
+    /* 6a. Average and write binary output */
     if (user_accum) {
         if (ctx->config.iterations > 0)
             binary_average(user_accum, count, dtype_gen, ctx->config.iterations);
@@ -131,9 +141,12 @@ static void run_test_size(const nccl_test_context_t *ctx, size_t msg_size,
         free(user_accum);
     }
 
-    /* 6. Report */
+    /* 7. Bandwidth: root sends msg_size to all ranks */
+    double avg_sec = (double)total_time_ms / ctx->config.iterations / 1000.0;
+    double bw = (avg_sec > 0.0) ? (bytes / avg_sec) / 1.0e9 : 0.0;
+
     nccl_report_results(ctx, bytes, count, total_time_ms, iter_errors,
-                        ctx->config.validate ? &metrics_acc : NULL);
+                        ctx->config.validate ? &metrics_acc : NULL, bw);
 }
 
 int main(int argc, char **argv)
@@ -147,25 +160,17 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    if (load_base_impl(BASE_SO_FILE) != 0) {
-        if (ctx.rank == 0)
-            fprintf(stderr, "Error: base impl not found\n");
-        nccl_test_fini(&ctx);
-        return 1;
-    }
-
     ncclDataType_t datatype = data_type_to_nccl(ctx.config.data_type);
 
     size_t max_sz = ctx.config.max_message_size;
     void *h_buf = malloc(max_sz);
     void *h_ref = malloc(max_sz);
     void *d_buf = NULL; cudaMalloc(&d_buf, max_sz);
-    void *d_ref = NULL; cudaMalloc(&d_ref, max_sz);
 
-    if (!h_buf || !h_ref || !d_buf || !d_ref) {
+    if (!h_buf || !h_ref || !d_buf) {
         fprintf(stderr, "Error: Memory allocation failed\n");
         free(h_buf); free(h_ref);
-        cudaFree(d_buf); cudaFree(d_ref);
+        cudaFree(d_buf);
         nccl_test_fini(&ctx);
         return 1;
     }
@@ -174,10 +179,10 @@ int main(int argc, char **argv)
     size_iter_init(&it, &ctx.config);
     size_t sz;
     while (size_iter_next(&it, &sz))
-        run_test_size(&ctx, sz, datatype, h_buf, h_ref, d_buf, d_ref);
+        run_test_size(&ctx, sz, datatype, h_buf, h_ref, d_buf);
 
     free(h_buf); free(h_ref);
-    cudaFree(d_buf); cudaFree(d_ref);
+    cudaFree(d_buf);
     nccl_test_fini(&ctx);
     return 0;
 }

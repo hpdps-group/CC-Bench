@@ -2,7 +2,7 @@
  * NCCL benchmark utilities — replaces mpi_utils.h for NCCL-only tests.
  *
  * No MPI dependency. Rank/size are obtained from environment variables.
- * Reference calls use base_nccl* (real NCCL loaded via dlopen by findso).
+ * Aggregation uses file-based exchange.
  */
 
 #ifndef NCCL_UTILS_H
@@ -34,7 +34,9 @@ typedef struct {
     test_config_t config;
     ncclComm_t comm;
     cudaStream_t stream;
-    int *d_barrier;    /* pre-allocated GPU buffer for barrier */
+    int *d_barrier;          /* pre-allocated GPU buffer for barrier (unused with TCP barrier) */
+    int barrier_peers[256];  /* TCP barrier peer sockets, -1 if unused */
+    int barrier_listen_fd;   /* TCP barrier listen socket (rank 0 only, -1 after init) */
 } nccl_test_context_t;
 
 /* ── Lifecycle ────────────────────────────────────────────────── */
@@ -50,14 +52,18 @@ void nccl_load_input(const nccl_test_context_t *ctx, void *buf,
 void nccl_report_results(const nccl_test_context_t *ctx,
                          size_t msg_size, int count,
                          float total_time_ms, int local_errors,
-                         const validation_result_t *metrics);
+                         const validation_result_t *metrics,
+                         double bw);
 
 /* ── Type conversion ──────────────────────────────────────────── */
 data_type_t      nccl_to_data_type(ncclDataType_t nccl_type);
 ncclDataType_t   data_type_to_nccl(data_type_t type);
 size_t           nccl_dtype_size(ncclDataType_t dtype);
 
-/* ── Barrier across all ranks (uses base_ncclAllReduce) ───────── */
+/* ── Rank accessor for LD_PRELOAD wrappers (perf, etc.) ─────────── */
+int nccl_get_my_rank(void);
+
+/* ── Barrier across all ranks (uses ncclAllReduce) ────────────── */
 void nccl_barrier(nccl_test_context_t *ctx);
 
 /* ── Parse comma-separated int array from env var ─────────────── */

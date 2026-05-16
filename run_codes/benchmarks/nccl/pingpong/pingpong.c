@@ -14,11 +14,9 @@
 #include <sys/stat.h>
 #include "utils.h"
 #include "validation.h"
-#include "base_impl.h"
-#include "nccl/nccl_base.h"
 #include "nccl/nccl_utils.h"
 
-#define NCCL_ID_FILE "/tmp/nccl_bench_pingpong_id"
+#define NCCL_ID_FILE "nccl_id_file/nccl_bench_id"
 
 /* ── NCCL bootstrap ──────────────────────────────────────────────────────── */
 static ncclComm_t bootstrap_nccl(int rank, int size)
@@ -105,11 +103,35 @@ int main(int argc, char **argv)
                 cudaStreamSynchronize(stream);
                 for (int w = 0; w < config.warmup_iterations; w++) {
                     if (rank == 0) {
-                        ncclSend(d_buf, count, dtype, partner, comm, stream);
-                        ncclRecv(d_buf, count, dtype, partner, comm, stream);
+                        ncclResult_t _ret = ncclSend(d_buf, count, dtype, partner, comm, stream);
+                        if (_ret != ncclSuccess) {
+                            fprintf(stderr, "[rank=%d] ncclSend FAILED at size=%zu iter=%d "
+                                            "error=%d — aborting\n",
+                                    rank, sz, w, (int)_ret);
+                            exit(1);
+                        }
+                        ncclResult_t _ret2 = ncclRecv(d_buf, count, dtype, partner, comm, stream);
+                        if (_ret2 != ncclSuccess) {
+                            fprintf(stderr, "[rank=%d] ncclRecv FAILED at size=%zu iter=%d "
+                                            "error=%d — aborting\n",
+                                    rank, sz, w, (int)_ret2);
+                            exit(1);
+                        }
                     } else {
-                        ncclRecv(d_buf, count, dtype, 0, comm, stream);
-                        ncclSend(d_buf, count, dtype, 0, comm, stream);
+                        ncclResult_t _ret = ncclRecv(d_buf, count, dtype, 0, comm, stream);
+                        if (_ret != ncclSuccess) {
+                            fprintf(stderr, "[rank=%d] ncclRecv FAILED at size=%zu iter=%d "
+                                            "error=%d — aborting\n",
+                                    rank, sz, w, (int)_ret);
+                            exit(1);
+                        }
+                        ncclResult_t _ret2 = ncclSend(d_buf, count, dtype, 0, comm, stream);
+                        if (_ret2 != ncclSuccess) {
+                            fprintf(stderr, "[rank=%d] ncclSend FAILED at size=%zu iter=%d "
+                                            "error=%d — aborting\n",
+                                    rank, sz, w, (int)_ret2);
+                            exit(1);
+                        }
                     }
                     cudaStreamSynchronize(stream);
                 }
@@ -126,14 +148,26 @@ int main(int argc, char **argv)
 
                     if (rank == 0) {
                         cudaEventRecord(ev0, stream);
-                        ncclSend(d_buf, count, dtype, partner, comm, stream);
+                        ncclResult_t _ret = ncclSend(d_buf, count, dtype, partner, comm, stream);
+                        if (_ret != ncclSuccess) {
+                            fprintf(stderr, "[rank=%d] ncclSend FAILED at size=%zu iter=%d "
+                                            "error=%d — aborting\n",
+                                    rank, sz, i, (int)_ret);
+                            exit(1);
+                        }
                         cudaEventRecord(ev1, stream);
                         cudaEventSynchronize(ev1);
                         float ms; cudaEventElapsedTime(&ms, ev0, ev1);
                         send0_total += (double)ms / 1000.0;
 
                         cudaEventRecord(ev0, stream);
-                        ncclRecv(d_buf, count, dtype, partner, comm, stream);
+                        ncclResult_t _ret2 = ncclRecv(d_buf, count, dtype, partner, comm, stream);
+                        if (_ret2 != ncclSuccess) {
+                            fprintf(stderr, "[rank=%d] ncclRecv FAILED at size=%zu iter=%d "
+                                            "error=%d — aborting\n",
+                                    rank, sz, i, (int)_ret2);
+                            exit(1);
+                        }
                         cudaEventRecord(ev1, stream);
                         cudaEventSynchronize(ev1);
                         cudaEventElapsedTime(&ms, ev0, ev1);
@@ -142,14 +176,26 @@ int main(int argc, char **argv)
                         round_total += send0_total + recv0_total;
                     } else {
                         cudaEventRecord(ev0, stream);
-                        ncclRecv(d_buf, count, dtype, 0, comm, stream);
+                        ncclResult_t _ret = ncclRecv(d_buf, count, dtype, 0, comm, stream);
+                        if (_ret != ncclSuccess) {
+                            fprintf(stderr, "[rank=%d] ncclRecv FAILED at size=%zu iter=%d "
+                                            "error=%d — aborting\n",
+                                    rank, sz, i, (int)_ret);
+                            exit(1);
+                        }
                         cudaEventRecord(ev1, stream);
                         cudaEventSynchronize(ev1);
                         float ms; cudaEventElapsedTime(&ms, ev0, ev1);
                         recvP_total += (double)ms / 1000.0;
 
                         cudaEventRecord(ev0, stream);
-                        ncclSend(d_buf, count, dtype, 0, comm, stream);
+                        ncclResult_t _ret2 = ncclSend(d_buf, count, dtype, 0, comm, stream);
+                        if (_ret2 != ncclSuccess) {
+                            fprintf(stderr, "[rank=%d] ncclSend FAILED at size=%zu iter=%d "
+                                            "error=%d — aborting\n",
+                                    rank, sz, i, (int)_ret2);
+                            exit(1);
+                        }
                         cudaEventRecord(ev1, stream);
                         cudaEventSynchronize(ev1);
                         cudaEventElapsedTime(&ms, ev0, ev1);
@@ -168,14 +214,26 @@ int main(int argc, char **argv)
                     void *d_pt;
                     cudaMalloc(&d_pt, 2 * sizeof(double));
                     cudaMemcpy(d_pt, partner_times, 2 * sizeof(double), cudaMemcpyHostToDevice);
-                    ncclSend(d_pt, 2, ncclFloat64, 0, comm, stream);
+                    ncclResult_t _ret = ncclSend(d_pt, 2, ncclFloat64, 0, comm, stream);
+                    if (_ret != ncclSuccess) {
+                        fprintf(stderr, "[rank=%d] ncclSend FAILED at size=%zu iter=%d "
+                                        "error=%d — aborting\n",
+                                rank, sz, 0, (int)_ret);
+                        exit(1);
+                    }
                     cudaStreamSynchronize(stream);
                     cudaFree(d_pt);
                 }
                 if (rank == 0) {
                     void *d_pt;
                     cudaMalloc(&d_pt, 2 * sizeof(double));
-                    ncclRecv(d_pt, 2, ncclFloat64, partner, comm, stream);
+                    ncclResult_t _ret = ncclRecv(d_pt, 2, ncclFloat64, partner, comm, stream);
+                    if (_ret != ncclSuccess) {
+                        fprintf(stderr, "[rank=%d] ncclRecv FAILED at size=%zu iter=%d "
+                                        "error=%d — aborting\n",
+                                rank, sz, 0, (int)_ret);
+                        exit(1);
+                    }
                     cudaStreamSynchronize(stream);
                     cudaMemcpy(host_times, d_pt, 2 * sizeof(double), cudaMemcpyDeviceToHost);
                     cudaFree(d_pt);
@@ -199,6 +257,14 @@ int main(int argc, char **argv)
                 }
             }
         }
+        /* Barrier: synchronize all ranks before next partner (d_buf is GPU memory) */
+        ncclResult_t _ret = ncclAllReduce(d_buf, d_buf, 1, ncclFloat32, ncclSum, comm, stream);
+        if (_ret != ncclSuccess) {
+            fprintf(stderr, "[rank=%d] ncclAllReduce FAILED at size=%zu error=%d — aborting\n",
+                    rank, sz, (int)_ret);
+            exit(1);
+        }
+        cudaStreamSynchronize(stream);
     }
 
     cudaFree(d_buf);

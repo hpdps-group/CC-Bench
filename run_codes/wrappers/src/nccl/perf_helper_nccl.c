@@ -3,10 +3,9 @@
  *
  * Replaces perf_helper_mpi.c for LD_PRELOAD wrappers that don't use MPI.
  *
- * Node map: uses the real ncclAllGather (loaded via dlopen + dlsym, same
- * pattern as get_base_implementation.c) to exchange GPU PCI bus IDs across
- * all ranks.  perf_nccl_is_intra() then compares bus IDs to determine
- * whether a peer is on the same physical node.
+ * Node map: file-based hostname exchange (no NCCL collective).
+ * perf_nccl_is_intra() compares hostnames to determine whether a peer
+ * is on the same physical node.
  *
  * The real libnccl.so path is read from the file written by findso
  * (bin/libs/base_so_name), falling back to common sonames if unavailable.
@@ -21,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #include <pthread.h>
 
 /* ── Per-process state (thread-safe via pthread_once) ─────────── */
@@ -163,12 +163,46 @@ resolve:
 }
 
 /* ── GPU node map ──────────────────────────────────────────────── */
-#define PCI_ID_LEN 64
+#define HOSTNAME_LEN 64
 
-static char   *s_pci_ids = NULL;   /* [nranks][PCI_ID_LEN] */
-static int     s_nranks  = 0;
-static int     s_my_rank = -1;
+static char   *s_hostnames = NULL;   /* [nranks][HOSTNAME_LEN] */
+static int     s_nranks    = 0;
 static int     s_node_map_ready = 0;
+
+/* Separate comm for node-map queries, set via perf_nccl_set_node_map_comm().
+ * When a custom NCCL wraps ncclComm_t, this must be a real (unwrapped) comm
+ * so rank/nranks queries work without struct-layout mismatch. */
+static ncclComm_t g_node_map_comm = NULL;
+
+/* ── Rank from benchmark binary via env var ──────────────────────
+ *
+ * nccl_test_init() in nccl_utils.c sets PERF_NCCL_RANK from the
+ * process rank.  No -rdynamic or symbol interposition needed.             */
+static int perf_get_rank(void)
+{
+    static int rank = -1;
+    static int resolved = 0;
+    if (!resolved) {
+        const char *r = getenv("PERF_NCCL_RANK_998244353");
+        if (r) rank = atoi(r);
+        resolved = 1;
+    }
+    return rank;
+}
+
+void perf_nccl_set_node_map_comm(ncclComm_t comm)
+{
+    g_node_map_comm = comm;
+}
+
+/* ── Init node map (file-based hostname exchange) ──────────────
+ *
+ * Each rank writes its hostname to nccl_id_file/hostname_<rank>,
+ * then all ranks read every file.  No NCCL collective involved, so this
+ * avoids CUDA 700 on setups where two NCCL comms' proxy threads collide.
+ *
+ * Stale hostname_* files from previous runs are removed at the start.
+ * Also removes stale pci_id_* files from the old format.                     */
 
 void perf_nccl_init_node_map(ncclComm_t comm)
 {
@@ -178,33 +212,75 @@ void perf_nccl_init_node_map(ncclComm_t comm)
     if (ensure_real_nccl() != 0)
         return;
 
+    /* Use registered comm if available — only for rank/nranks queries
+     * (no collectives performed here). */
+    ncclComm_t info_comm = g_node_map_comm ? g_node_map_comm : comm;
+
     int rank, nranks;
-    if (real_ncclCommUserRank(comm, &rank) != ncclSuccess)
+    if (real_ncclCommUserRank(info_comm, &rank) != ncclSuccess)
         return;
-    if (real_ncclCommCount(comm, &nranks) != ncclSuccess)
+    if (real_ncclCommCount(info_comm, &nranks) != ncclSuccess)
         return;
 
-    /* Get the PCI bus ID of the current GPU */
-    int dev;
-    cudaGetDevice(&dev);
-    char my_pci[PCI_ID_LEN];
-    if (cudaDeviceGetPCIBusId(my_pci, PCI_ID_LEN, dev) != cudaSuccess)
+    /* Get the hostname — all GPUs on the same node share the same hostname,
+     * which is how we determine intra-node communication. */
+    char my_hostname[HOSTNAME_LEN];
+    if (gethostname(my_hostname, HOSTNAME_LEN) != 0)
         return;
+    my_hostname[HOSTNAME_LEN - 1] = '\0';
+
+    /* Remove stale pci_id_* files from the old (buggy) format */
+    char fname[256];
+    snprintf(fname, sizeof(fname), "nccl_id_file/pci_id_%d", rank);
+    remove(fname);
 
     /* Allocate receive buffer */
-    char *all_pci = (char *)calloc((size_t)nranks, PCI_ID_LEN);
-    if (!all_pci) return;
+    char *all_hostnames = (char *)calloc((size_t)nranks, HOSTNAME_LEN);
+    if (!all_hostnames) return;
 
-    /* Exchange PCI bus IDs via the real ncclAllGather */
-    if (real_ncclAllGather(my_pci, all_pci, PCI_ID_LEN, ncclUint8,
-                           comm, NULL) != ncclSuccess) {
-        free(all_pci);
-        return;
+    /* ── Clean our own stale file from previous runs ────────────
+     * Each rank removes only its own file — removing other ranks'
+     * files races with their writes (they may have already written). */
+
+    /* ── Write our own hostname ────────────────────────────────── */
+    snprintf(fname, sizeof(fname), "nccl_id_file/hostname_%d", rank);
+    FILE *f = fopen(fname, "wb");
+    if (!f) { free(all_hostnames); return; }
+    fwrite(my_hostname, 1, HOSTNAME_LEN, f);
+    fclose(f);
+
+    /* Our own entry — no need to read the file */
+    memcpy(all_hostnames + (size_t)rank * HOSTNAME_LEN, my_hostname, HOSTNAME_LEN);
+
+    /* ── Wait for and read all other ranks' files ──────────────── */
+    for (int r = 0; r < nranks; r++) {
+        if (r == rank) continue;
+
+        snprintf(fname, sizeof(fname), "nccl_id_file/hostname_%d", r);
+        struct stat st;
+        int waited = 0;
+        while (stat(fname, &st) != 0 || st.st_size == 0) {
+            usleep(10000);
+            waited++;
+            if (waited > 3000) {
+                fprintf(stderr, "[perf_nccl] timeout waiting for hostname_%d\n", r);
+                free(all_hostnames);
+                return;
+            }
+        }
+        FILE *rf = fopen(fname, "rb");
+        if (!rf) { free(all_hostnames); return; }
+        size_t n = fread(all_hostnames + (size_t)r * HOSTNAME_LEN, 1, HOSTNAME_LEN, rf);
+        fclose(rf);
+        if (n != HOSTNAME_LEN) {
+            fprintf(stderr, "[perf_nccl] short read on hostname_%d\n", r);
+            free(all_hostnames);
+            return;
+        }
     }
 
-    s_my_rank      = rank;
     s_nranks       = nranks;
-    s_pci_ids      = all_pci;
+    s_hostnames    = all_hostnames;
     s_node_map_ready = 1;
 }
 
@@ -212,9 +288,9 @@ int perf_nccl_is_intra(int rank)
 {
     if (!s_node_map_ready || rank < 0 || rank >= s_nranks)
         return 0;
-    return strncmp(s_pci_ids + (size_t)rank * PCI_ID_LEN,
-                   s_pci_ids + (size_t)s_my_rank * PCI_ID_LEN,
-                   PCI_ID_LEN) == 0;
+    return strncmp(s_hostnames + (size_t)rank * HOSTNAME_LEN,
+                   s_hostnames + (size_t)perf_get_rank() * HOSTNAME_LEN,
+                   HOSTNAME_LEN) == 0;
 }
 
 int perf_nccl_local_size(void)
@@ -234,7 +310,7 @@ void perf_nccl_flush(void)
 {
     if (g_state.total_records == 0) return;
 
-    perf_flush_to_rank_file(&g_state, s_my_rank, "perf_nccl");
+    perf_flush_to_rank_file(&g_state, perf_get_rank(), "perf_nccl");
     perf_destroy(&g_state);
 }
 
@@ -243,8 +319,8 @@ __attribute__((destructor))
 static void perf_nccl_on_exit(void)
 {
     perf_nccl_flush();
-    free(s_pci_ids);
-    s_pci_ids = NULL;
+    free(s_hostnames);
+    s_hostnames = NULL;
     if (g_nccl_handle) {
         dlclose(g_nccl_handle);
         g_nccl_handle = NULL;

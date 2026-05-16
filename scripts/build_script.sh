@@ -142,6 +142,10 @@ emit('DAEMON_INTERVAL', cfg['daemon']['performance']['poll_interval_sec'])
 stress = cfg['daemon'].get('stress', {})
 emit('STRESS_CPU_PERCENT', stress.get('cpu_percent', 50))
 
+debug = cfg['basic'].get('debug', {})
+emit('GDB_ENABLED', debug.get('gdb_enabled', False))
+emit('GDB_PATH', debug.get('gdb_path', 'gdb'))
+
 for pair in [('COMM','comm'), ('COMP','comp'), ('PERF','perf')]:
     key = pair[0]
     ckey = pair[1]
@@ -192,6 +196,7 @@ for s in build_comm_wrapper build_comp_wrapper build_perf_wrapper; do
 done
 echo "[build_script] Wrapper libraries done"
 echo ""
+
 
 # ============================================================
 # Rebuild benchmark binaries (if --rebuild-bench was passed)
@@ -304,6 +309,12 @@ write_line ""
 write_line '# NCCL unique-id file'
 write_line 'mkdir -p "${BENCH_DIR}/nccl_id_file"'
 write_line 'rm -f "${BENCH_DIR}/nccl_id_file/nccl_bench_id"'
+write_line 'rm -f "${BENCH_DIR}/nccl_id_file/nccl_bench_id.meta."*'
+write_line 'rm -f "${BENCH_DIR}/nccl_id_file/nccl_bench_id.meta."*.tmp.*'
+# Clean stale TCP barrier file from previous runs (NCCL benchmark bootstrap)
+if [ "$ARCH" = "nccl" ]; then
+    write_line 'rm -f "${BENCH_DIR}/nccl_id_file/nccl_barrier_addr"'
+fi
 write_line ""
 if [ "$OUTPUT_CSV" = "true" ] && [ -n "$OUTPUT_PATH" ]; then
     write_line "# Clean up previous CSV output"
@@ -447,6 +458,7 @@ write_line "echo \"\""
 write_line 'echo "[bench] Step 2: Wrapper libraries ready (built locally)"'
 write_line ""
 
+
 # ============================================================
 # Step 3 -- LD_PRELOAD (base: compression + communication)
 # ============================================================
@@ -456,6 +468,13 @@ write_line 'LD_PRELOAD=""'
 
 write_preload_entry "compression" "$COMP_MODE" "$COMP_LIBPATHS" "$COMP_OUTPUT"
 write_preload_entry "communication" "$COMM_MODE" "$COMM_LIBPATHS" "$COMM_OUTPUT"
+
+# Extensions: default ncclAllToAll etc. (lowest priority — overridable)
+write_line '# Extensions: default ncclAllToAll, ncclScatter, ncclGather...'
+write_line 'if [ -f "${BENCH_DIR}/bin/libs/libnccl_extensions.so" ]; then'
+write_line '  LD_PRELOAD="${LD_PRELOAD:+$LD_PRELOAD:}${BENCH_DIR}/bin/libs/libnccl_extensions.so"'
+write_line '  echo "[bench]   extensions: ${BENCH_DIR}/bin/libs/libnccl_extensions.so"'
+write_line 'fi'
 
 write_line 'export LD_PRELOAD'
 write_line 'echo "[bench] Base LD_PRELOAD (no perf): ${LD_PRELOAD:-"(none)"}"'
@@ -495,15 +514,25 @@ PHASE1_ARGS="$PHASE1_ARGS -d $DATATYPE"
 [ "$OUTPUT_BINARY" = "true" ] && [ -n "$OUTPUT_BIN_PATH" ] && PHASE1_ARGS="$PHASE1_ARGS -b -B \"$OUTPUT_BIN_PATH\""
 
 write_line ""
-write_line '# GDB debug wrapper — wrap binary with gdb --args if GDB env var is set'
-write_line 'GDB_WRAPPER=""'
-write_line '[ -n "${GDB:-}" ] && GDB_WRAPPER="gdb --args"'
+write_line '# GDB debug wrapper — batch mode, auto bt on crash if enabled'
+if [ "$GDB_ENABLED" = "true" ] || [ "$GDB_ENABLED" = "1" ]; then
+  write_line "GDB_WRAPPER=\"${GDB_PATH:-gdb} -batch -ex run -ex bt -ex \\\"bt full\\\" --args\""
+else
+  write_line 'GDB_WRAPPER=""'
+fi
 write_line ""
 write_line "$LAUNCH_CMD \$GDB_WRAPPER \\"
 write_line "    \"\$BENCH_DIR/bin/\${ARCH}/\${TEST_NAME}/\${TEST_NAME}\" $PHASE1_ARGS"
 
 write_line 'BENCH_RC1=$?'
 write_line 'echo ""'
+
+# Clean metadata before Phase 2 to prevent stale metadata race
+write_line 'echo "[bench] Cleaning metadata files for Phase 2..."'
+write_line 'rm -f "${BENCH_DIR}/nccl_id_file/nccl_bench_id.meta."*'
+write_line 'rm -f "${BENCH_DIR}/nccl_id_file/nccl_bench_id.meta."*.tmp.*'
+write_line ''
+
 write_line ""
 
 # ============================================================
@@ -545,6 +574,7 @@ write_line 'PERF_OLD="$LD_PRELOAD"'
 write_line 'LD_PRELOAD=""'
 write_preload_entry "perf" "$PERF_MODE" "$PERF_LIBPATHS" "$PERF_OUTPUT"
 write_line 'LD_PRELOAD="${LD_PRELOAD}${PERF_OLD:+:$PERF_OLD}"'
+
 write_line 'export LD_PRELOAD'
 write_line 'echo "[bench] Final LD_PRELOAD: ${LD_PRELOAD:-"(none)"}"'
 write_line "echo \"\""

@@ -15,9 +15,7 @@
 #include <string.h>
 #include "utils.h"
 #include "validation.h"
-#include "base_impl.h"
 #include "nccl/nccl_utils.h"
-#include "nccl/nccl_base.h"
 
 /* Build recvcounts/displs from weights.  Returns total recv elements. */
 static int build_distribution(int *recvcounts, int *displs,
@@ -81,10 +79,16 @@ static void run_test_size(const nccl_test_context_t *ctx, size_t msg_size,
     /* 3. Warmup: need a barrier to ensure recvcounts/displs are ready */
     nccl_barrier((nccl_test_context_t *)ctx);
     for (int i = 0; i < ctx->config.warmup_iterations; i++) {
-        ncclAllGatherv(d_send, sendcount, datatype,
-                       d_recv, recvcounts, displs, datatype,
-                       d_recvcounts, d_displs,
-                       ctx->comm, ctx->stream);
+        ncclResult_t _ret = ncclAllGatherv(d_send, sendcount, datatype,
+                                           d_recv, recvcounts, displs, datatype,
+                                           d_recvcounts, d_displs,
+                                           ctx->comm, ctx->stream);
+        if (_ret != ncclSuccess) {
+            fprintf(stderr, "[rank=%d] ncclAllGatherv FAILED at size=%zu iter=%d "
+                            "error=%d -- aborting\n",
+                    ctx->rank, msg_size, i, (int)_ret);
+            exit(1);
+        }
         cudaStreamSynchronize(ctx->stream);
     }
 
@@ -106,10 +110,16 @@ static void run_test_size(const nccl_test_context_t *ctx, size_t msg_size,
         nccl_barrier((nccl_test_context_t *)ctx);
 
         cudaEventRecord(start, ctx->stream);
-        ncclAllGatherv(d_send, sendcount, datatype,
-                       d_recv, recvcounts, displs, datatype,
-                       d_recvcounts, d_displs,
-                       ctx->comm, ctx->stream);
+        ncclResult_t _ret = ncclAllGatherv(d_send, sendcount, datatype,
+                                           d_recv, recvcounts, displs, datatype,
+                                           d_recvcounts, d_displs,
+                                           ctx->comm, ctx->stream);
+        if (_ret != ncclSuccess) {
+            fprintf(stderr, "[rank=%d] ncclAllGatherv FAILED at size=%zu iter=%d "
+                            "error=%d -- aborting\n",
+                    ctx->rank, msg_size, iter, (int)_ret);
+            exit(1);
+        }
         cudaEventRecord(stop, ctx->stream);
         cudaEventSynchronize(stop);
 
@@ -146,8 +156,14 @@ static void run_test_size(const nccl_test_context_t *ctx, size_t msg_size,
                    msg_size, iter_errors, ctx->config.iterations);
     }
 
+    /* 6. Bandwidth: each rank receives (recv_bytes - send_bytes) from others */
+    double avg_sec = (double)total_time_ms / ctx->config.iterations / 1000.0;
+    double bw = 0.0;
+    if (avg_sec > 0.0)
+        bw = (recv_bytes - send_bytes) / avg_sec;
+    bw /= 1.0e9;
     nccl_report_results(ctx, send_bytes, sendcount, total_time_ms, iter_errors,
-                        ctx->config.validate ? &metrics_acc : NULL);
+                        ctx->config.validate ? &metrics_acc : NULL, bw);
 
     free(recvcounts);
     free(displs);

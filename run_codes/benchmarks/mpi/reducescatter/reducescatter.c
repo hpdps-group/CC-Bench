@@ -12,7 +12,6 @@
 #include <string.h>
 #include "utils.h"
 #include "validation.h"
-#include "base_impl.h"
 #include "mpi/mpi_utils.h"
 #include "binary_output.h"
 
@@ -43,8 +42,12 @@ static void run_test_size(const mpi_test_context_t *ctx, size_t msg_size,
 
     /* 2. Warmup */
     for (int i = 0; i < ctx->config.warmup_iterations; i++) {
-        MPI_Reduce_scatter(user_sendbuf, user_recvbuf, recvcounts,
-                           datatype, op, MPI_COMM_WORLD);
+        int _ret = MPI_Reduce_scatter(user_sendbuf, user_recvbuf, recvcounts,
+                                      datatype, op, MPI_COMM_WORLD);
+        if (_ret != MPI_SUCCESS) {
+            fprintf(stderr, "[rank=%d] MPI_Reduce_scatter FAILED -- aborting\n", ctx->rank);
+            exit(1);
+        }
         PMPI_Reduce_scatter(ref_sendbuf, ref_recvbuf, recvcounts,
                             datatype, op, MPI_COMM_WORLD);
     }
@@ -66,8 +69,12 @@ static void run_test_size(const mpi_test_context_t *ctx, size_t msg_size,
     for (int iter = 0; iter < ctx->config.iterations; iter++) {
         PMPI_Barrier(MPI_COMM_WORLD);
         double start = MPI_Wtime();
-        MPI_Reduce_scatter(user_sendbuf, user_recvbuf, recvcounts,
-                           datatype, op, MPI_COMM_WORLD);
+        int _ret = MPI_Reduce_scatter(user_sendbuf, user_recvbuf, recvcounts,
+                                      datatype, op, MPI_COMM_WORLD);
+        if (_ret != MPI_SUCCESS) {
+            fprintf(stderr, "[rank=%d] MPI_Reduce_scatter FAILED -- aborting\n", ctx->rank);
+            exit(1);
+        }
         PMPI_Barrier(MPI_COMM_WORLD);
         double end = MPI_Wtime();
         total_time += (end - start);
@@ -145,12 +152,6 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    if (load_base_impl(BASE_SO_FILE) != 0) {
-        if (ctx.rank == 0)
-            fprintf(stderr, "Error: base impl not found\n");
-        mpi_test_fini(&ctx);
-        return 1;
-    }
 
     MPI_Datatype datatype = data_type_to_mpi(ctx.config.data_type);
     MPI_Op op = MPI_SUM;

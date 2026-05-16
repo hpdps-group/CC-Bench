@@ -74,7 +74,6 @@ ncclResult_t ncclSend(const void *sendbuff, size_t count,
   if (!real) real = perf_nccl_get_real("ncclSend");
   if (!real) return ncclInternalError;
 
-  perf_nccl_init_node_map(comm);
   double t0 = perf_get_time();
   ncclResult_t ret = real(sendbuff, count, datatype, peer, comm, stream);
   double t1 = perf_get_time();
@@ -97,7 +96,6 @@ ncclResult_t ncclRecv(void *recvbuff, size_t count,
   if (!real) real = perf_nccl_get_real("ncclRecv");
   if (!real) return ncclInternalError;
 
-  perf_nccl_init_node_map(comm);
   double t0 = perf_get_time();
   ncclResult_t ret = real(recvbuff, count, datatype, peer, comm, stream);
   double t1 = perf_get_time();
@@ -271,6 +269,7 @@ ncclResult_t ncclAllReduce(const void *sendbuff, void *recvbuff,
                             size_t count, ncclDataType_t datatype,
                             ncclRedOp_t op, ncclComm_t comm,
                             cudaStream_t stream) {
+
   static ncclResult_t (*real)(const void *, void *, size_t,
                                ncclDataType_t, ncclRedOp_t,
                                ncclComm_t, cudaStream_t) = NULL;
@@ -293,6 +292,7 @@ ncclResult_t ncclBroadcast(const void *sendbuff, void *recvbuff,
                             size_t count, ncclDataType_t datatype,
                             int root, ncclComm_t comm,
                             cudaStream_t stream) {
+
   static ncclResult_t (*real)(const void *, void *, size_t,
                                ncclDataType_t, int,
                                ncclComm_t, cudaStream_t) = NULL;
@@ -314,6 +314,7 @@ ncclResult_t ncclBroadcast(const void *sendbuff, void *recvbuff,
 ncclResult_t ncclAllGather(const void *sendbuff, void *recvbuff,
                             size_t sendcount, ncclDataType_t datatype,
                             ncclComm_t comm, cudaStream_t stream) {
+
   static ncclResult_t (*real)(const void *, void *, size_t,
                                ncclDataType_t, ncclComm_t,
                                cudaStream_t) = NULL;
@@ -336,6 +337,7 @@ ncclResult_t ncclReduceScatter(const void *sendbuff, void *recvbuff,
                                 size_t recvcount, ncclDataType_t datatype,
                                 ncclRedOp_t op, ncclComm_t comm,
                                 cudaStream_t stream) {
+
   static ncclResult_t (*real)(const void *, void *, size_t,
                                ncclDataType_t, ncclRedOp_t,
                                ncclComm_t, cudaStream_t) = NULL;

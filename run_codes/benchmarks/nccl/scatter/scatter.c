@@ -12,9 +12,9 @@
 #include <string.h>
 #include "utils.h"
 #include "validation.h"
-#include "base_impl.h"
 #include "nccl/nccl_utils.h"
 #include "binary_output.h"
+#include "dummy_collectives.h"
 
 #define ROOT 0
 
@@ -41,10 +41,11 @@ static void run_test_size(const nccl_test_context_t *ctx, size_t msg_size,
     }
     nccl_barrier((nccl_test_context_t *)ctx);
 
-    /* 2. CPU reference: each rank expects data generated with its own rank */
+    /* 2. CPU reference (dummy_scatter loads root's data from file or pattern) */
     if (ctx->config.validate || ctx->config.save_binary) {
         data_type_t dt = nccl_to_data_type(datatype);
-        init_buffer_pattern(h_ref, count_per, dt, ctx->config.pattern_type, ctx->rank);
+        dummy_scatter(h_ref, ctx->config.input_file, dt, ctx->config.pattern_type,
+                      count_per, ctx->size, ROOT, ctx->rank);
     }
 
     /* 2a. Allocate user accumulator for binary output */
@@ -54,9 +55,15 @@ static void run_test_size(const nccl_test_context_t *ctx, size_t msg_size,
     /* 3. Warmup */
     cudaStreamSynchronize(ctx->stream);
     for (int i = 0; i < ctx->config.warmup_iterations; i++) {
-        ncclScatter(d_send, count_per, datatype,
-                    d_recv, count_per, datatype,
-                    ROOT, ctx->comm, ctx->stream);
+        ncclResult_t _ret = ncclScatter(d_send, count_per, datatype,
+                                        d_recv, count_per, datatype,
+                                        ROOT, ctx->comm, ctx->stream);
+        if (_ret != ncclSuccess) {
+            fprintf(stderr, "[rank=%d] ncclScatter FAILED at size=%zu iter=%d "
+                            "error=%d — aborting\n",
+                    ctx->rank, msg_size, i, (int)_ret);
+            exit(1);
+        }
         cudaStreamSynchronize(ctx->stream);
     }
 
@@ -74,9 +81,15 @@ static void run_test_size(const nccl_test_context_t *ctx, size_t msg_size,
         nccl_barrier((nccl_test_context_t *)ctx);
 
         cudaEventRecord(start, ctx->stream);
-        ncclScatter(d_send, count_per, datatype,
-                    d_recv, count_per, datatype,
-                    ROOT, ctx->comm, ctx->stream);
+        ncclResult_t _ret = ncclScatter(d_send, count_per, datatype,
+                                        d_recv, count_per, datatype,
+                                        ROOT, ctx->comm, ctx->stream);
+        if (_ret != ncclSuccess) {
+            fprintf(stderr, "[rank=%d] ncclScatter FAILED at size=%zu iter=%d "
+                            "error=%d — aborting\n",
+                    ctx->rank, msg_size, iter, (int)_ret);
+            exit(1);
+        }
         cudaEventRecord(stop, ctx->stream);
         cudaEventSynchronize(stop);
 
@@ -133,8 +146,10 @@ static void run_test_size(const nccl_test_context_t *ctx, size_t msg_size,
         free(user_accum);
     }
 
+    double avg_sec = (double)total_time_ms / ctx->config.iterations / 1000.0;
+    double bw = (avg_sec > 0.0) ? (msg_size / avg_sec) / 1.0e9 : 0.0;
     nccl_report_results(ctx, msg_size, count_per, total_time_ms, iter_errors,
-                        ctx->config.validate ? &metrics_acc : NULL);
+                        ctx->config.validate ? &metrics_acc : NULL, bw);
 }
 
 int main(int argc, char **argv)

@@ -28,7 +28,7 @@
 
    用户自定义实现请放在 your_wrapper_code/perf/ 下。
   */
-  "mode": 1,
+  "mode": 3,
 
   "library_paths": ["/path/to/libperf.so"],
 

@@ -3,20 +3,26 @@
  *
  * Bootstrap: rank/size from environment variables, NCCL unique ID
  * via file-based exchange.  Timing via CUDA events.
- * Results aggregated across ranks using base_ncclAllReduce
- * (real NCCL loaded by findso + get_base_implementation.c).
+ * Results aggregated across ranks using file-based exchange.
  */
 
+#define _GNU_SOURCE
 #include "nccl/nccl_utils.h"
-#include "nccl/nccl_base.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
 
 /* Fixed path used for NCCL unique-ID bootstrap across processes */
 #define NCCL_ID_FILE "nccl_id_file/nccl_bench_id"
+
+/* File for TCP barrier address exchange (same shared directory) */
+#define BARRIER_ADDR_FILE "nccl_id_file/nccl_barrier_addr"
 
 #ifndef NCCLCHECK
 #define NCCLCHECK(call) do { \
@@ -28,6 +34,11 @@
     } \
 } while (0)
 #endif
+
+/* ── Global rank accessor for LD_PRELOAD wrappers (perf, etc.) ─ */
+static int g_nccl_my_rank = -1;
+
+int nccl_get_my_rank(void) { return g_nccl_my_rank; }
 
 /* ── Rank / size from environment (no MPI) ────────────────────── */
 static void get_rank_size(int *rank, int *size)
@@ -51,6 +62,7 @@ static ncclComm_t init_nccl_comm(int rank, int size)
     if (size == 1) {
         ncclGetUniqueId(&id);
     } else if (rank == 0) {
+        printf("[nccl] Generating NCCL unique ID...\n");
         NCCLCHECK(ncclGetUniqueId(&id));
         FILE *f = fopen(NCCL_ID_FILE, "wb");
         if (!f) { perror("fopen NCCL_ID_FILE"); exit(1); }
@@ -59,6 +71,7 @@ static ncclComm_t init_nccl_comm(int rank, int size)
     }
 
     if (size > 1 && rank != 0) {
+        printf("[nccl] Waiting for NCCL unique ID from rank 0...\n");
         struct stat st;
         int waited = 0;
         while (stat(NCCL_ID_FILE, &st) != 0 || st.st_size == 0) {
@@ -68,6 +81,8 @@ static ncclComm_t init_nccl_comm(int rank, int size)
                 fprintf(stderr, "Rank %d: timeout waiting for NCCL id\n", rank);
                 exit(1);
             }
+            if (waited % 100 == 0) /* every ~1 s */
+                printf("[nccl]   still waiting... (%d s)\n", waited / 100);
         }
         FILE *f = fopen(NCCL_ID_FILE, "rb");
         if (!f) { perror("fopen NCCL_ID_FILE for read"); exit(1); }
@@ -79,10 +94,15 @@ static ncclComm_t init_nccl_comm(int rank, int size)
         }
     }
 
+    printf("[nccl] Creating NCCL communicator (%d ranks)...\n", size);
     ncclComm_t comm;
     NCCLCHECK(ncclCommInitRank(&comm, size, id, rank));
+    printf("[nccl] NCCL communicator created\n");
     return comm;
 }
+
+/* ── TCP barrier init (defined below, called from nccl_test_init) ── */
+static void nccl_barrier_init(nccl_test_context_t *ctx);
 
 /* ── Public API ───────────────────────────────────────────────── */
 
@@ -93,18 +113,40 @@ nccl_test_context_t nccl_test_init(int argc, char **argv,
     memset(&ctx, 0, sizeof(ctx));
 
     get_rank_size(&ctx.rank, &ctx.size);
+    g_nccl_my_rank = ctx.rank;
+    {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%d", ctx.rank);
+        setenv("PERF_NCCL_RANK_998244353", buf, 1);
+    }
 
-    /* Pick GPU: rank % available devices */
+    printf("[nccl] Initializing CUDA...\n");
     int ndev = 0;
     cudaGetDeviceCount(&ndev);
-    cudaSetDevice(ctx.rank % (ndev > 0 ? ndev : 1));
+    int dev = ctx.rank % (ndev > 0 ? ndev : 1);
+    cudaSetDevice(dev);
     cudaStreamCreate(&ctx.stream);
 
     /* Allocate one int for barrier */
     cudaMalloc(&ctx.d_barrier, sizeof(int));
 
-    /* NCCL communicator */
+    /* TCP barrier — init BEFORE ncclCommInitRank so that all ranks
+     * synchronise before UCCL's cross-node connection phase.
+     * This prevents a fast rank from sending OOB connection requests
+     * before a slower peer's Endpoint TCP server is listening. */
+    nccl_barrier_init(&ctx);
+
+    // /* Pre-init barrier disabled — letting ranks stagger into
+    //  * ncclCommInitRank to avoid thundering-herd connection attempts
+    //  * that cause UCCL QP state-machine races. */
+    // nccl_barrier(&ctx);
+
+    /* NCCL communicator — ranks start staggered */
     ctx.comm = init_nccl_comm(ctx.rank, ctx.size);
+
+    /* Second barrier: ensure all ranks completed ncclCommInitRank
+     * before anyone proceeds to the first benchmark iteration. */
+    nccl_barrier(&ctx);
 
     /* Parse config */
     ctx.config = parse_arguments(argc, argv);
@@ -143,14 +185,120 @@ void nccl_test_fini(nccl_test_context_t *ctx)
     if (ctx->rank == 0)
         printf("=== Test Complete ===\n");
 
+    /* Close TCP barrier connections */
+    for (int i = 0; i < ctx->size; i++) {
+        if (ctx->barrier_peers[i] >= 0) close(ctx->barrier_peers[i]);
+    }
+    if (ctx->barrier_listen_fd >= 0) close(ctx->barrier_listen_fd);
+
     if (ctx->d_barrier) cudaFree(ctx->d_barrier);
     ncclCommDestroy(ctx->comm);
     cudaStreamDestroy(ctx->stream);
 
     /* Clean up NCCL id file (best-effort) */
-    if (ctx->rank == 0)
+    if (ctx->rank == 0) {
         remove(NCCL_ID_FILE);
+        remove(BARRIER_ADDR_FILE);
+    }
 }
+
+/* ── TCP barrier initialization ────────────────────────────────── */
+static void nccl_barrier_init(nccl_test_context_t *ctx)
+{
+    ctx->barrier_listen_fd = -1;
+    for (int i = 0; i < 256; i++) ctx->barrier_peers[i] = -1;
+
+    if (ctx->size <= 1) return;
+
+    if (ctx->rank == 0) {
+        /* Remove stale barrier address file from previous runs so that peers
+         * don't connect to a defunct port before rank 0 writes the new one. */
+        remove(BARRIER_ADDR_FILE);
+
+        /* Create listen socket on kernel-assigned port */
+        int fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0) { perror("barrier socket"); exit(1); }
+        int opt = 1;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+        struct sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = INADDR_ANY;
+        addr.sin_port = 0;
+        if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+            perror("barrier bind"); exit(1);
+        }
+        listen(fd, ctx->size - 1);
+
+        /* Get assigned port */
+        socklen_t slen = sizeof(addr);
+        getsockname(fd, (struct sockaddr*)&addr, &slen);
+        int port = ntohs(addr.sin_port);
+
+        /* Get hostname and write to shared file */
+        char host[256];
+        if (gethostname(host, sizeof(host)) < 0) {
+            perror("gethostname"); exit(1);
+        }
+        FILE *f = fopen(BARRIER_ADDR_FILE, "w");
+        if (!f) { perror("fopen barrier_addr"); exit(1); }
+        fprintf(f, "%s:%d\n", host, port);
+        fclose(f);
+
+        /* Accept connections from all peers */
+        int accepted = 0;
+        while (accepted < ctx->size - 1) {
+            struct sockaddr_in peer_addr;
+            socklen_t peer_len = sizeof(peer_addr);
+            int peer_fd = accept(fd, (struct sockaddr*)&peer_addr, &peer_len);
+            if (peer_fd < 0) { perror("barrier accept"); exit(1); }
+            /* Read peer rank */
+            uint8_t peer_rank;
+            if (read(peer_fd, &peer_rank, 1) != 1) {
+                fprintf(stderr, "barrier: failed to read peer rank\n");
+                exit(1);
+            }
+            ctx->barrier_peers[peer_rank] = peer_fd;
+            accepted++;
+        }
+        close(fd); /* listen socket no longer needed */
+        ctx->barrier_listen_fd = -1;
+        remove(BARRIER_ADDR_FILE);
+    } else {
+        /* Wait for rank 0's address file */
+        struct stat st;
+        while (stat(BARRIER_ADDR_FILE, &st) != 0) {
+            usleep(10000);
+        }
+        /* Read address */
+        FILE *f = fopen(BARRIER_ADDR_FILE, "r");
+        if (!f) { perror("fopen barrier_addr for read"); exit(1); }
+        char host[256]; int port;
+        if (fscanf(f, "%255[^:]:%d", host, &port) != 2) {
+            fprintf(stderr, "barrier: failed to parse address\n");
+            exit(1);
+        }
+        fclose(f);
+        /* Connect to rank 0 */
+        struct hostent *he = gethostbyname(host);
+        if (!he) { fprintf(stderr, "barrier: unknown host %s\n", host); exit(1); }
+        int fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0) { perror("barrier connect socket"); exit(1); }
+        struct sockaddr_in addr;
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(port);
+        memcpy(&addr.sin_addr, he->h_addr_list[0], he->h_length);
+        if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+            perror("barrier connect"); exit(1);
+        }
+        /* Send my rank */
+        uint8_t my_rank = ctx->rank;
+        write(fd, &my_rank, 1);
+        ctx->barrier_peers[0] = fd;
+    }
+}
+
 
 void nccl_load_input(const nccl_test_context_t *ctx, void *buf,
                      size_t msg_size, ncclDataType_t datatype)
@@ -205,73 +353,144 @@ void nccl_load_input(const nccl_test_context_t *ctx, void *buf,
     }
 }
 
+/*
+ * ── File-based cross-rank aggregation ──────────────────────────────
+ *
+ * Each rank writes its timing + error data to a unique file, then all
+ * ranks stat-wait for every file and read them independently.
+ *
+ * No NCCL collective involved, so this works with any NCCL plugin
+ * (COCCL, UCCL, etc.) without struct-layout issues or library conflicts.
+ *
+ * A static step counter keeps successive calls (one per message size)
+ * from racing on the same file names.
+ */
+#define AGG_DIR "runtime_files/nccl_agg"
+
 void nccl_report_results(const nccl_test_context_t *ctx,
                          size_t msg_size, int count,
                          float total_time_ms, int local_errors,
-                         const validation_result_t *metrics)
+                         const validation_result_t *metrics,
+                         double bw)
 {
-    double avg_us = (double)total_time_ms / ctx->config.iterations * 1000.0;
+    double avg_us = ctx->config.iterations > 0
+        ? (double)total_time_ms / ctx->config.iterations * 1000.0
+        : 0.0;
 
-    /* Allocate GPU buffers for cross-rank aggregation */
-    double *d_in, *d_out;
-    size_t sz = sizeof(double);
-    cudaMalloc(&d_in, sz);
-    cudaMalloc(&d_out, sz);
+    static int agg_step = 0;
+    int rank = ctx->rank;
+    int nranks = ctx->size;
 
-    /* Min */
-    cudaMemcpy(d_in, &avg_us, sz, cudaMemcpyHostToDevice);
-    base_ncclAllReduce(d_in, d_out, 1, ncclFloat64, ncclMin,
-                       ctx->comm, ctx->stream);
-    cudaStreamSynchronize(ctx->stream);
-    double min_us;
-    cudaMemcpy(&min_us, d_out, sz, cudaMemcpyDeviceToHost);
+    if (nranks == 1) {
+        /* Single rank — no exchange needed, just print */
+        if (rank == 0) {
+            printf("Size: %8zu bytes (%6d elements)\n", msg_size, count);
+            printf("  User: avg=%8.2f us\n", avg_us);
+            printf("  Bandwidth: %8.2f GB/s\n", bw);
+            if (ctx->config.validate) {
+                printf("  Correct: %s\n", local_errors == 0 ? "YES" : "NO");
+                if (metrics && ctx->config.compute_metrics && metrics->num_elements > 0) {
+                    for (int i = 0; i < g_metric_registry_count && i < MAX_METRICS; i++) {
+                        if (ctx->config.metrics_mask & (1u << i))
+                            printf("  %s: %.6e\n", g_metric_registry[i].name, metrics->values[i]);
+                    }
+                }
+            }
+            printf("\n");
+        }
+        return;
+    }
 
-    /* Max */
-    cudaMemcpy(d_in, &avg_us, sz, cudaMemcpyHostToDevice);
-    base_ncclAllReduce(d_in, d_out, 1, ncclFloat64, ncclMax,
-                       ctx->comm, ctx->stream);
-    cudaStreamSynchronize(ctx->stream);
-    double max_us;
-    cudaMemcpy(&max_us, d_out, sz, cudaMemcpyDeviceToHost);
+    /* ── Ensure directory exists (rank 0) ────────────────────── */
+    if (rank == 0) {
+        mkdir("runtime_files", 0755);
+        mkdir(AGG_DIR, 0755);
+    }
 
-    /* Sum → global average */
-    cudaMemcpy(d_in, &avg_us, sz, cudaMemcpyHostToDevice);
-    base_ncclAllReduce(d_in, d_out, 1, ncclFloat64, ncclSum,
-                       ctx->comm, ctx->stream);
-    cudaStreamSynchronize(ctx->stream);
-    double sum_us;
-    cudaMemcpy(&sum_us, d_out, sz, cudaMemcpyDeviceToHost);
-    double avg_global = sum_us / ctx->size;
+    /* ── Write our data ──────────────────────────────────────── */
+    double agg_data[3] = { avg_us, (double)local_errors, bw };
+    char fname[256];
+    snprintf(fname, sizeof(fname), AGG_DIR "/s%d_r%d", agg_step, rank);
 
-    cudaFree(d_in);
-    cudaFree(d_out);
+    remove(fname);
+    FILE *f = fopen(fname, "wb");
+    if (!f) { perror("fopen agg write"); return; }
+    fwrite(agg_data, sizeof(double), 3, f);
+    fclose(f);
 
-    /* Total errors across ranks */
-    int total_errors;
-    int *d_err;
-    cudaMalloc(&d_err, sizeof(int));
-    cudaMemcpy(d_err, &local_errors, sizeof(int), cudaMemcpyHostToDevice);
-    base_ncclAllReduce(d_err, d_err, 1, ncclInt32, ncclSum,
-                       ctx->comm, ctx->stream);
-    cudaStreamSynchronize(ctx->stream);
-    cudaMemcpy(&total_errors, d_err, sizeof(int), cudaMemcpyDeviceToHost);
-    cudaFree(d_err);
+    /* ── Wait for and read all other ranks' files ────────────── */
+    double *all_data = (double *)calloc((size_t)nranks, 3 * sizeof(double));
+    if (!all_data) { perror("calloc agg"); return; }
 
-    if (ctx->rank == 0) {
+    for (int r = 0; r < nranks; r++) {
+        if (r == rank) {
+            all_data[(size_t)r * 3]     = avg_us;
+            all_data[(size_t)r * 3 + 1] = (double)local_errors;
+            all_data[(size_t)r * 3 + 2] = bw;
+            continue;
+        }
+
+        char rfname[256];
+        snprintf(rfname, sizeof(rfname), AGG_DIR "/s%d_r%d", agg_step, r);
+
+        struct stat st;
+        int waited = 0;
+        while (stat(rfname, &st) != 0 || st.st_size == 0) {
+            usleep(10000);
+            if (++waited > 3000) {
+                fprintf(stderr, "[agg] timeout waiting for %s\n", rfname);
+                free(all_data);
+                return;
+            }
+        }
+
+        FILE *rf = fopen(rfname, "rb");
+        if (!rf) { free(all_data); return; }
+        size_t n = fread(&all_data[(size_t)r * 3], sizeof(double), 3, rf);
+        fclose(rf);
+        if (n != 3) {
+            fprintf(stderr, "[agg] short read on %s\n", rfname);
+            free(all_data);
+            return;
+        }
+    }
+
+    /* ── Compute aggregated stats ────────────────────────────── */
+    double min_us = avg_us, max_us = avg_us, sum_us = avg_us;
+    double bw_min = bw, bw_max = bw, bw_sum = bw;
+    int total_errors = local_errors;
+    for (int r = 0; r < nranks; r++) {
+        double v = all_data[(size_t)r * 3];
+        int    e = (int)all_data[(size_t)r * 3 + 1];
+        double b = all_data[(size_t)r * 3 + 2];
+        if (v < min_us) min_us = v;
+        if (v > max_us) max_us = v;
+        sum_us += v;
+        total_errors += e;
+        if (b < bw_min) bw_min = b;
+        if (b > bw_max) bw_max = b;
+        bw_sum += b;
+    }
+    double avg_global = sum_us / nranks;
+    double bw_avg = bw_sum / nranks;
+
+    free(all_data);
+    agg_step++;
+
+    /* ── Print results (rank 0 only) ─────────────────────────── */
+    if (rank == 0) {
         printf("Size: %8zu bytes (%6d elements)\n", msg_size, count);
         printf("  User: avg=%8.2f us, min=%8.2f us, max=%8.2f us\n",
                avg_global, min_us, max_us);
+        printf("  Bandwidth: avg=%8.2f GB/s, min=%8.2f GB/s, max=%8.2f GB/s\n",
+               bw_avg, bw_min, bw_max);
 
         if (ctx->config.validate) {
-            printf("  Correct: %s\n",
-                   total_errors == 0 ? "YES" : "NO");
-            if (metrics && ctx->config.compute_metrics &&
-                metrics->num_elements > 0) {
+            printf("  Correct: %s\n", total_errors == 0 ? "YES" : "NO");
+            if (metrics && ctx->config.compute_metrics && metrics->num_elements > 0) {
                 for (int i = 0; i < g_metric_registry_count && i < MAX_METRICS; i++) {
-                    if (ctx->config.metrics_mask & (1u << i)) {
-                        printf("  %s: %.6e\n", g_metric_registry[i].name,
-                               metrics->values[i]);
-                    }
+                    if (ctx->config.metrics_mask & (1u << i))
+                        printf("  %s: %.6e\n", g_metric_registry[i].name, metrics->values[i]);
                 }
             }
         }
@@ -323,15 +542,33 @@ size_t nccl_dtype_size(ncclDataType_t dtype)
     }
 }
 
-/* ── Barrier using ncclAllReduce (bypasses wrapper) ────────────── */
+/* ── Barrier across all ranks (TCP-based) ──────────────────────── */
 void nccl_barrier(nccl_test_context_t *ctx)
 {
-    int zero = 0;
-    cudaMemcpyAsync(ctx->d_barrier, &zero, sizeof(int),
-                    cudaMemcpyHostToDevice, ctx->stream);
-    base_ncclAllReduce(ctx->d_barrier, ctx->d_barrier, 1,
-                       ncclInt32, ncclSum, ctx->comm, ctx->stream);
-    cudaStreamSynchronize(ctx->stream);
+    if (ctx->size <= 1) return;
+
+    char c;
+    if (ctx->rank == 0) {
+        /* Wait for all peers to arrive */
+        for (int r = 1; r < ctx->size; r++) {
+            if (read(ctx->barrier_peers[r], &c, 1) != 1) {
+                fprintf(stderr, "[rank=0] barrier: lost connection from rank %d\n", r);
+                exit(1);
+            }
+        }
+        /* Broadcast release */
+        for (int r = 1; r < ctx->size; r++) {
+            write(ctx->barrier_peers[r], "1", 1);
+        }
+    } else {
+        /* Signal rank 0 that we've arrived */
+        write(ctx->barrier_peers[0], "1", 1);
+        /* Wait for release */
+        if (read(ctx->barrier_peers[0], &c, 1) != 1) {
+            fprintf(stderr, "[rank=%d] barrier: lost connection to rank 0\n", ctx->rank);
+            exit(1);
+        }
+    }
 }
 
 /* ── Parse comma-separated int array from env var ─────────────── */
