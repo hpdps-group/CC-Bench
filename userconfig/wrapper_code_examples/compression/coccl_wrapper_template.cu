@@ -1,22 +1,24 @@
 /**
- * coccl_wrapper_template.cu — 单文件模板：为 COCCL 系列库编写 GPU 压缩 wrapper。
+ * coccl_wrapper_template.cu — Single-file template for writing GPU compression
+ *                              wrappers for COCCL-family libraries.
  *
- * === 使用方式 ===
- * 1. 在你的 backend .cu 文件顶部 #include 本文件
- * 2. 实现下面 3 个回调函数（最后会跳转到它们）:
+ * === Usage ===
+ * 1. #include this file at the top of your backend .cu file
+ * 2. Implement the 3 callback functions below (the dispatch will call them):
  *      size_t         maxCompSize(size_t numElems, ncclDataType_t type);
  *      ncclResult_t   compressOne(const void* src, void* dst, ...);
  *      ncclResult_t   decompressOne(const void* src, void* dst, ...);
- * 3. 编译：nvcc -shared -O3 -lnccl -std=c++17 -o libxxx.so xxx.cu
- *    （不需要额外编译本文件，#include 会拉进来）
+ * 3. Compile: nvcc -shared -O3 -lnccl -std=c++17 -o libxxx.so xxx.cu
+ *    (do NOT compile this file separately; #include brings it in)
  *
- * === 修改函数名 ===
- * 如果你想导出 ncclCompress 以外的名字（比如 mylib_compress），
- * 直接编辑下面 4 个 extern "C" 函数的名称即可。
- * LD_PRELOAD 要求符号名 = 被拦截库调用的名字，所以目标库叫什么你就改成什么。
+ * === Changing exported function names ===
+ * If you want to export names other than ncclCompress (e.g., mylib_compress),
+ * simply edit the 4 extern "C" function names below.
+ * LD_PRELOAD requires symbol names matching whatever the intercepted library
+ * uses, so name them accordingly.
  *
- * 回调函数名（maxCompSize / compressOne / decompressOne）不需要改，
- * 在你自己的 .cu 里实现它们就行。
+ * The callback names (maxCompSize / compressOne / decompressOne) don't need
+ * to change; implement them in your own .cu file.
  */
 
 #include <cuda_runtime.h>
@@ -37,7 +39,7 @@ typedef ncclCommOp ncclCommOp_t;
 #endif
 
 /*-------------------------------------------------------------------------*
- *  回调前向声明 — 在你的 .cu 里实现它们                                    *
+ *  Callback forward declarations — implement these in your .cu            *
  *-------------------------------------------------------------------------*/
 static size_t      maxCompSize(size_t numElems, ncclDataType_t type);
 static ncclResult_t compressOne(const void* src, void* dst,
@@ -48,16 +50,16 @@ static ncclResult_t decompressOne(const void* src, void* dst,
                                   cudaStream_t stream);
 
 /*=========================================================================*
- *  4 个入口函数 — 在这儿改名字                                            *
+ *  4 entry-point functions — rename them here                             *
  *                                                                         *
- *  默认名:  ncclCompress / ncclDecompress / ncclDecompressReduce /        *
- *           ncclDecompReduceComp                                          *
- *  适合 LD_PRELOAD 拦截 coccl。                                           *
- *  改成其他名字（如 my_compress）用于直接链接。                           *
+ *  Default names: ncclCompress / ncclDecompress / ncclDecompressReduce /   *
+ *                 ncclDecompReduceComp                                     *
+ *  Suitable for LD_PRELOAD interception of coccl.                          *
+ *  Change to other names (e.g., my_compress) for direct linking.          *
  *=========================================================================*/
 
 /*─────────────────────────────────────────────────────────────────────────*
- *  1. 压缩                                                               *
+ *  1. Compress                                                          *
  *─────────────────────────────────────────────────────────────────────────*/
 extern "C" ncclResult_t ncclCompress(
     const void* orgbuff, void** compbuff,
@@ -101,7 +103,7 @@ extern "C" ncclResult_t ncclCompress(
 }
 
 /*─────────────────────────────────────────────────────────────────────────*
- *  2. 解压缩                                                             *
+ *  2. Decompress                                                        *
  *─────────────────────────────────────────────────────────────────────────*/
 extern "C" ncclResult_t ncclDecompress(
     void* decompbuff, const void* compbuff,
@@ -134,7 +136,7 @@ extern "C" ncclResult_t ncclDecompress(
 }
 
 /*─────────────────────────────────────────────────────────────────────────*
- *  3. 解压缩 + 累加（用于 ring reduce 收端）                              *
+ *  3. Decompress + Reduce (ring reduce receiver side)                   *
  *─────────────────────────────────────────────────────────────────────────*/
 extern "C" ncclResult_t ncclDecompressReduce(
     void* reducebuff, const void* compbuff,
@@ -178,7 +180,7 @@ extern "C" ncclResult_t ncclDecompressReduce(
 }
 
 /*─────────────────────────────────────────────────────────────────────────*
- *  4. 解压缩 → 归约 → 再压缩（用于分层 allreduce 的 inter-node）          *
+ *  4. Decompress → Reduce → Recompress (inter-node for hierarchical allreduce) *
  *─────────────────────────────────────────────────────────────────────────*/
 extern "C" ncclResult_t ncclDecompReduceComp(
     const void* compbuff, void** recompbuff,
@@ -207,7 +209,7 @@ extern "C" ncclResult_t ncclDecompReduceComp(
   *reCompDatatype  = ncclUint8;
   *reCompChunkCount = perChunk;
 
-  /* temp 存放所有解压后的 chunk */
+  /* temp holds all decompressed chunks */
   void* temp = nullptr;
   if (cudaMallocAsync(&temp, chunkBytes * numChunks, stream) != cudaSuccess)
     return ncclInternalError;
@@ -219,7 +221,7 @@ extern "C" ncclResult_t ncclDecompReduceComp(
     }
   }
 
-  /* Step 1 — 解压全部 chunk */
+  /* Step 1 — Decompress all chunks */
   for (size_t c = 0; c < numChunks; c++) {
     ncclResult_t r = decompressOne(
         static_cast<const char*>(compbuff) + c * compChunkCount,
@@ -228,7 +230,7 @@ extern "C" ncclResult_t ncclDecompReduceComp(
     if (r != ncclSuccess) { cudaFreeAsync(temp, stream); return r; }
   }
 
-  /* Step 2 — 两两归约到第一个 chunk */
+  /* Step 2 — Pairwise reduce into the first chunk */
   for (size_t c = 1; c < numChunks; c++) {
     add_kernel(orgDatatype,
                static_cast<const char*>(temp) + c * chunkBytes,
@@ -237,7 +239,7 @@ extern "C" ncclResult_t ncclDecompReduceComp(
                orgChunkCount, stream);
   }
 
-  /* Step 3 — 压缩归约结果 */
+  /* Step 3 — Compress the reduced result */
   {
     ncclResult_t r = compressOne(temp, *recompbuff,
                                  orgChunkCount, orgDatatype, stream);
@@ -249,7 +251,7 @@ extern "C" ncclResult_t ncclDecompReduceComp(
 }
 
 /*=========================================================================*
- *  工具函数 — 不用改                                                      *
+ *  Utility functions — no need to modify                                  *
  *=========================================================================*/
 
 /*── add_kernel ─────────────────────────────────────────────────────────*/

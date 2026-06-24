@@ -1,32 +1,32 @@
 {
   /*
-    ===== 基础配置 =====
+    ===== Basic Configuration =====
 
-    benchmark_type:  benchmark 类型
+    benchmark_type: benchmark type
       "mpi_allreduce"   — MPI AllReduce (CPU/GPU + MPI)
       "nccl_allreduce"  — NCCL AllReduce (NVIDIA GPU only)
       "mpi_sendrecv"    — MPI point-to-point (send/recv)
       "mpi_bcast"       — MPI Broadcast
 
-    communication_arch: 通信架构
+    communication_arch: communication architecture
       "mpi"   — MPI-based communication
       "nccl"  — NCCL-based communication (NVIDIA)
       "rccl"  — RCCL-based communication (AMD)
 
-    data_source: 数据源配置
-      type: "pattern" — 使用生成的 pattern 数据
-            "file"    — 从文件加载真实数据
+    data_source: data source configuration
+      type: "pattern" — use generated pattern data
+            "file"    — load from file
       pattern_type: "plain" / "rank_linear" / "rank_product" / "sequential"
 
-    message_sizes: 消息大小范围
-      mode: "range" — 使用 min/max/increment 定义范围（默认）
-            "list"  — 使用显式列表 list:[...]
-      当 mode="range" 时：
-        min/max — 字节数
-        increment_type: "multiply" — 每次乘以 increment 值（如 *=2）
-                        "add"      — 每次加上 increment 值
-      当 mode="list" 时：
-        list — 显式列出所有要测试的消息大小
+    message_sizes: message size specification
+      mode: "range" — define range via min/max/increment (default)
+            "list"  — use explicit list:[...]
+      When mode="range":
+        min/max — in bytes
+        increment_type: "multiply" — multiply by increment value each step (e.g., *=2)
+                        "add"      — add increment value each step
+      When mode="list":
+        list — explicitly list all message sizes to test
   */
   "benchmark_type": "nccl_allreduce",
   "communication_arch": "nccl",
@@ -37,18 +37,18 @@
 
   "data_source": {
     "type": "file",
-    "file_path": "/data/home/scyb672/run/datasets/nyx/baryon_density.f32",
+    "file_path": "dataset/weight/weight_4gb.f32",
     "pattern_type": "rank_linear",
     "file_format": "binary",
     "offset_config": {
       "base_offset": 0,
-      "per_rank_offset": true,
+      "per_rank_offset": false,
       "custom_offsets": []
     }
   },
 
   "output": {
-    "csv": false,
+    "csv": true,
     "csv_path": "results/pingpong.csv",
     "binary": true,
     "bin_path": "results/AllReduce"
@@ -71,41 +71,21 @@
 
   "message_sizes": {
     "mode": "range",
-    "min": 8388608,
-    "max": 33554432,
-    "increment": 2,
-    "increment_type": "multiply",
+    "min": 268435456,
+    "max": 1342177280,
+    "increment": 268435456,
+    "increment_type": "add",
     "list": [
-      1,
-      2,
-      4,
-      8,
-      16,
-      32,
-      64,
-      128,
-      256,
-      512,
-      1024,
-      2048,
-      4096,
-      8192,
-      16384,
-      32768,
-      65536,
-      131072,
-      262144,
-      524288,
-      1048576,
-      2097152,
-      4194304,
-      8388608,
-      16777216,
-      33554432,
-      67108864,
-      134217728,
-      268435456,
-      536870912
+      8192,      //8 KB
+      65536,     //64KB
+      524288,    //512KB
+      1048576,   //1MB
+      8388608,   //8MB
+      33554432,  //32MB
+      67108864,  //64MB
+      134217728, //128MB
+      268435456, //256MB
+      536870912  //512MB
     ]
   }
 }

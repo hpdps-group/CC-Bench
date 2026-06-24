@@ -1,39 +1,40 @@
 {
   /*
-    性能监控 Daemon 配置
-    在 benchmark 运行时后台采集系统性能数据（CPU/GPU/网络等）。
+    Performance Monitoring Daemon Configuration
+    Collects system performance data (CPU/GPU/network, etc.) in the background during benchmarks.
 
-    可用 daemon（来自 userconfig/daemon_code_examples/）:
-      cpu       — 逐核 CPU 利用率 + 内存利用率
-      gpu_nvidia — NVIDIA GPU 利用率、显存、温度、PCIe 状态（依赖 nvidia-smi）
-      ib        — InfiniBand 网络带宽统计
-      pcie      — PCIe 链路状态监控
+    Available daemons (from userconfig/daemon_code_examples/):
+      cpu       — per-core CPU utilization + memory usage
+      gpu_nvidia — NVIDIA GPU utilization, VRAM, temperature, PCIe status (requires nvidia-smi)
+      ib        — InfiniBand network bandwidth statistics
+      pcie      — PCIe link status monitoring
 
-    用户自定义 daemon 请放入 userconfig/your_daemons/，
-    脚本会自动扫描编译。
+    Custom daemons should be placed in userconfig/your_daemons/;
+    the build script will scan and compile them automatically.
   */
   "performance": {
     "enabled": true,
-    "selected_daemons": "cpu, ib, pcie, gpu_nvidia",
-    "poll_interval_sec": 1.0
+    "phase1_daemons": "",
+    "phase2_daemons": "",
+    "poll_interval_sec": 0.5
   },
   "stress": {
     /*
-      CPU Stress Daemon 配置。
+      CPU Stress Daemon Configuration.
 
-      激活方式: 将 "stress_cpu" 加入上方 selected_daemons,
-      例如: "cpu, ib, pcie, stress_cpu"
+      Activation: add "stress_cpu" to the selected_daemons list,
+      e.g.: "cpu, ib, pcie, stress_cpu"
 
-      cpu_percent: CPU 占用率目标 (1-100), 默认 50。
+      cpu_percent: target CPU utilization (1-100), default 50.
 
-      GPU Stress Daemon (NVIDIA) 配置。
+      GPU Stress Daemon (NVIDIA) Configuration.
 
-      激活方式: 将 "stress_gpu_nvidia" 加入 selected_daemons,
-      例如: "cpu, ib, pcie, stress_cpu, stress_gpu_nvidia"
+      Activation: add "stress_gpu_nvidia" to the selected_daemons list,
+      e.g.: "cpu, ib, pcie, stress_cpu, stress_gpu_nvidia"
 
-      gpu_percent: GPU 占用率目标 (1-100), 默认 50。
-      依赖 NVIDIA 驱动和 CUDA 库 (daemon_stress_gpu_nvidia.c 编译时需要 -lcuda,
-      register_daemons.sh 会自动检测并添加)。
+      gpu_percent: target GPU utilization (1-100), default 50.
+      Requires NVIDIA driver and CUDA libraries (daemon_stress_gpu_nvidia.c needs -lcuda at compile time;
+      register_daemons.sh will auto-detect and add it).
     */
     "cpu_percent": 30,
     "gpu_percent": 30

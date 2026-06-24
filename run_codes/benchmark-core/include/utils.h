@@ -106,6 +106,7 @@ typedef struct {
     size_t size_list[256];
     size_t min_size, max_size;
     int incr;
+    int incr_mode;  /* 0=multiply, 1=add */
 } size_iter_t;
 
 /**
@@ -116,6 +117,7 @@ typedef struct {
     size_t min_message_size;
     size_t max_message_size;
     int message_size_incr;
+    int message_size_incr_mode;  /* 0=multiply (default), 1=add (-A) */
 
     /* Explicit size list (-L X,Y,Z), overrides min/max/incr */
     int use_size_list;

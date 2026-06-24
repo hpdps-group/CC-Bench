@@ -69,4 +69,11 @@ void nccl_barrier(nccl_test_context_t *ctx);
 /* ── Parse comma-separated int array from env var ─────────────── */
 int *nccl_parse_env_int_array(const char *env_name, int expected_len, int *out_len);
 
+/**
+ * CSV output utility (rank 0 writes to path, others skip).
+ * If header is provided and the file does not exist,
+ * the header line is written first. fmt + args append one data line.
+ */
+void nccl_csv_write(const char *path, const char *header, const char *fmt, ...);
+
 #endif /* NCCL_UTILS_H */

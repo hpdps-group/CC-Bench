@@ -43,7 +43,7 @@ DEFAULT_PINGPONG = "results/pingpong.csv"
 
 # Entries with recorded duration below this threshold (microseconds) are
 # treated as async (missing) and will be estimated via interpolation.
-ASYNC_DURATION_THRESHOLD = 0.001
+ASYNC_DURATION_THRESHOLD = 10.0
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +218,7 @@ def analyze_rank(rank, args, pp_data, sizes_by_type):
         dur_str = row.get(dur_field, "").strip()
         has_explicit_duration = bool(dur_str)
         try:
-            duration = float(dur_str) if dur_str else 0.0
+            duration = float(dur_str) * 1e6 if dur_str else 0.0
         except (ValueError, TypeError):
             duration = 0.0
 

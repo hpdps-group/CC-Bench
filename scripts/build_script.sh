@@ -118,12 +118,14 @@ if mode == 'list':
     emit('MSG_MIN', '0')
     emit('MSG_MAX', '0')
     emit('MSG_INCR', '0')
+    emit('MSG_INCR_TYPE', 'multiply')
 else:
     emit('MSG_MODE', 'range')
     emit('MSG_LIST', '')
     emit('MSG_MIN', ms['min'])
     emit('MSG_MAX', ms['max'])
     emit('MSG_INCR', ms['increment'])
+    emit('MSG_INCR_TYPE', ms.get('increment_type', 'multiply'))
 emit('DATATYPE', cfg['basic']['mpi_operation']['datatype'].replace('MPI_', '').lower())
 
 emit('VAL_ENABLED', cfg['deviation']['validation']['enabled'])
@@ -136,11 +138,13 @@ emit('OUTPUT_BINARY', out.get('binary', False))
 emit('OUTPUT_BIN_PATH', out.get('bin_path', ''))
 
 emit('DAEMON_ENABLED', cfg['daemon']['performance']['enabled'])
-emit('DAEMON_LIST', cfg['daemon']['performance']['selected_daemons'])
+emit('DAEMON_PHASE1_LIST', cfg['daemon']['performance']['phase1_daemons'])
+emit('DAEMON_PHASE2_LIST', cfg['daemon']['performance']['phase2_daemons'])
 emit('DAEMON_INTERVAL', cfg['daemon']['performance']['poll_interval_sec'])
 
 stress = cfg['daemon'].get('stress', {})
 emit('STRESS_CPU_PERCENT', stress.get('cpu_percent', 50))
+emit('STRESS_GPU_PERCENT', stress.get('gpu_percent', 50))
 
 debug = cfg['basic'].get('debug', {})
 emit('GDB_ENABLED', debug.get('gdb_enabled', False))
@@ -241,7 +245,7 @@ if [ "$ARCH" = "mpi" ]; then
         LAUNCH_CMD="mpirun -np $NPROCS --hostfile \$LSF_HOSTFILE --map-by node"
     fi
 elif command -v srun &>/dev/null; then
-    LAUNCH_CMD="srun --nodes=$SLURM_NODES --ntasks=$NPROCS --ntasks-per-node=$SLURM_TASKS_PER_NODE"
+    LAUNCH_CMD="stdbuf -oL srun --nodes=$SLURM_NODES --ntasks=$NPROCS --ntasks-per-node=$SLURM_TASKS_PER_NODE"
 elif command -v mpirun &>/dev/null; then
     LAUNCH_CMD="mpirun -np $NPROCS"
     if [ "$JOB_CHOICE" = "srun" ]; then
@@ -263,6 +267,59 @@ echo "[build_script] generating: $OUTPUT_SCRIPT"
 # ============================================================
 
 write_line() { echo "$1" >> "$OUTPUT_SCRIPT"; }
+
+# -- Daemon start/stop code generators -------------------------
+
+# $1: daemon list (baked into generated script at build time)
+# $2: PID array variable name (e.g., PHASE1_DAEMON_PIDS)
+emit_daemon_start_block() {
+    local list="$1"
+    local pid_var="$2"
+    write_line "if [ \"\$DAEMON_ENABLED\" = \"true\" ]; then"
+    write_line "  echo \"[bench] Starting daemons...\""
+    write_line "  IFS=\",\" read -ra DAEMONS <<< \"$list\""
+    write_line '  for daemon in "${DAEMONS[@]}"; do'
+    write_line '    d=$(echo "$daemon" | xargs)'
+    write_line '    [ -z "$d" ] && continue'
+    write_line '    if [ -x "$BENCH_DIR/bin/daemons/daemon_$d" ]; then'
+    if [ "$JOB_CHOICE" = "slurm" ] || [ "$JOB_CHOICE" = "srun" ]; then
+        write_line "      srun --nodes=\$NNODES --ntasks=\$NNODES --ntasks-per-node=1 --overlap \"\$BENCH_DIR/bin/daemons/daemon_\$d\" $DAEMON_INTERVAL &"
+        write_line "      echo \"[bench]   daemon_\$d started via srun\""
+    else
+        write_line "      \"\$BENCH_DIR/bin/daemons/daemon_\$d\" $DAEMON_INTERVAL &"
+        write_line "      echo \"[bench]   daemon_\$d started\""
+    fi
+    write_line "      ${pid_var}+=(\"\$!\")"
+    write_line '    fi'
+    write_line '  done'
+    write_line '  echo ""'
+    write_line 'fi'
+}
+
+# $1: daemon list
+# $2: PID array variable name
+emit_daemon_stop_block() {
+    local list="$1"
+    local pid_var="$2"
+    write_line "if [ \"\$DAEMON_ENABLED\" = \"true\" ]; then"
+    write_line '  echo "[bench] Stopping daemons..."'
+    write_line "  IFS=\",\" read -ra DAEMONS <<< \"$list\""
+    write_line '  for _d in "${DAEMONS[@]}"; do'
+    write_line '    d=$(echo "$_d" | xargs)'
+    write_line '    [ -z "$d" ] && continue'
+    write_line '    echo "EXIT" > "${BENCH_DIR}/daemon_signals/daemon_${d}.signal" 2>/dev/null || true'
+    write_line '    echo "[bench]   signal EXIT sent to daemon_${d}"'
+    write_line '  done'
+    write_line '  echo "[bench]   waiting for daemons to exit gracefully (max 10s)..."'
+    write_line "  for pid in \"\${${pid_var}[@]}\"; do"
+    write_line '    for i in $(seq 1 20); do'
+    write_line '      kill -0 "$pid" 2>/dev/null || break'
+    write_line '      sleep 0.5'
+    write_line '    done'
+    write_line '    kill -0 "$pid" 2>/dev/null && { kill "$pid" 2>/dev/null; echo "[bench]   force-killed PID $pid"; } || echo "[bench]   PID $pid exited cleanly"'
+    write_line '  done'
+    write_line 'fi'
+}
 
 # -- SLURM headers ---------------------------------------------
 
@@ -352,6 +409,7 @@ write_line "MSG_LIST=\"$MSG_LIST\""
 write_line "MSG_MIN=$MSG_MIN"
 write_line "MSG_MAX=$MSG_MAX"
 write_line "MSG_INCR=$MSG_INCR"
+write_line "MSG_INCR_TYPE=\"$MSG_INCR_TYPE\""
 write_line "DATATYPE=\"$DATATYPE\""
 write_line ""
 write_line "VAL_ENABLED=$VAL_ENABLED"
@@ -361,11 +419,14 @@ write_line "OUTPUT_CSV=$OUTPUT_CSV"
 write_line "OUTPUT_PATH=\"$OUTPUT_PATH\""
 write_line ""
 write_line "DAEMON_ENABLED=$DAEMON_ENABLED"
-write_line "DAEMON_LIST=\"$DAEMON_LIST\""
+write_line "DAEMON_PHASE1_LIST=\"$DAEMON_PHASE1_LIST\""
+write_line "DAEMON_PHASE2_LIST=\"$DAEMON_PHASE2_LIST\""
 write_line "DAEMON_INTERVAL=$DAEMON_INTERVAL"
 write_line ""
 write_line "STRESS_CPU_PERCENT=${STRESS_CPU_PERCENT:-$STRESS_CPU_PERCENT}"
 write_line 'export STRESS_CPU_PERCENT'
+write_line "STRESS_GPU_PERCENT=${STRESS_GPU_PERCENT:-$STRESS_GPU_PERCENT}"
+write_line 'export STRESS_GPU_PERCENT'
 write_line ""
 write_line "PHASE1_WARMUP=$PHASE1_WARMUP"
 write_line "PHASE1_MEASURE=$PHASE1_MEASURE"
@@ -491,7 +552,7 @@ write_line 'echo ""'
 write_line ""
 
 # ============================================================
-# Phase 1 -- Performance round (no perf wrapper, no daemons)
+# Phase 1 -- Performance round (with phase1 daemons)
 # ============================================================
 
 BENCH_BIN='${BENCH_DIR}/bin/${ARCH}/${TEST_NAME}/${TEST_NAME}'
@@ -502,6 +563,8 @@ write_line ""
 
 if [ "$MSG_MODE" = "list" ]; then
     PHASE1_ARGS="-L ${MSG_LIST}"
+elif [ "$MSG_INCR_TYPE" = "add" ]; then
+    PHASE1_ARGS="-m ${MSG_MIN}:${MSG_MAX}:${MSG_INCR} -A"
 else
     PHASE1_ARGS="-m ${MSG_MIN}:${MSG_MAX}:${MSG_INCR}"
 fi
@@ -514,6 +577,10 @@ PHASE1_ARGS="$PHASE1_ARGS -d $DATATYPE"
 [ "$OUTPUT_BINARY" = "true" ] && [ -n "$OUTPUT_BIN_PATH" ] && PHASE1_ARGS="$PHASE1_ARGS -b -B \"$OUTPUT_BIN_PATH\""
 
 write_line ""
+write_line '# Start phase1 daemons'
+write_line 'PHASE1_DAEMON_PIDS=()'
+emit_daemon_start_block "$DAEMON_PHASE1_LIST" PHASE1_DAEMON_PIDS
+
 write_line '# GDB debug wrapper — batch mode, auto bt on crash if enabled'
 if [ "$GDB_ENABLED" = "true" ] || [ "$GDB_ENABLED" = "1" ]; then
   write_line "GDB_WRAPPER=\"${GDB_PATH:-gdb} -batch -ex run -ex bt -ex \\\"bt full\\\" --args\""
@@ -526,6 +593,9 @@ write_line "    \"\$BENCH_DIR/bin/\${ARCH}/\${TEST_NAME}/\${TEST_NAME}\" $PHASE1
 
 write_line 'BENCH_RC1=$?'
 write_line 'echo ""'
+
+write_line '# Stop phase1 daemons'
+emit_daemon_stop_block "$DAEMON_PHASE1_LIST" PHASE1_DAEMON_PIDS
 
 # Clean metadata before Phase 2 to prevent stale metadata race
 write_line 'echo "[bench] Cleaning metadata files for Phase 2..."'
@@ -544,28 +614,9 @@ write_line ""
 
 # Start daemons
 write_line "# Step 5 -- Start monitoring daemons"
-write_line "DAEMON_PIDS=()"
+write_line 'PHASE2_DAEMON_PIDS=()'
 write_line ""
-
-if [ "$DAEMON_ENABLED" = "true" ]; then
-    write_line 'echo "[bench] Step 5: Starting daemons..."'
-    IFS=',' read -ra DAEMONS <<< "$DAEMON_LIST"
-    for daemon in "${DAEMONS[@]}"; do
-        d=$(echo "$daemon" | xargs)
-        [ -z "$d" ] && continue
-        write_line "if [ -x \"\$BENCH_DIR/bin/daemons/daemon_$d\" ]; then"
-        if [ "$JOB_CHOICE" = "slurm" ] || [ "$JOB_CHOICE" = "srun" ]; then
-            write_line "  srun --nodes=\$NNODES --ntasks=\$NNODES --ntasks-per-node=1 --overlap \"\$BENCH_DIR/bin/daemons/daemon_$d\" $DAEMON_INTERVAL &"
-            write_line "  echo \"[bench]   daemon_$d started via srun\""
-        else
-            write_line "  \"\$BENCH_DIR/bin/daemons/daemon_$d\" $DAEMON_INTERVAL &"
-            write_line "  echo \"[bench]   daemon_$d started\""
-        fi
-        write_line "  DAEMON_PIDS+=(\"\$!\")"
-        write_line "fi"
-    done
-    write_line 'echo ""'
-fi
+emit_daemon_start_block "$DAEMON_PHASE2_LIST" PHASE2_DAEMON_PIDS
 
 # Now add perf to LD_PRELOAD — put it FIRST so it intercepts before
 # compression / communication wrappers and can chain via RTLD_NEXT.
@@ -584,6 +635,8 @@ write_line ""
 
 if [ "$MSG_MODE" = "list" ]; then
     PHASE2_ARGS="-L ${MSG_LIST}"
+elif [ "$MSG_INCR_TYPE" = "add" ]; then
+    PHASE2_ARGS="-m ${MSG_MIN}:${MSG_MAX}:${MSG_INCR} -A"
 else
     PHASE2_ARGS="-m ${MSG_MIN}:${MSG_MAX}:${MSG_INCR}"
 fi
@@ -606,25 +659,7 @@ write_line ""
 # Step 6 -- Stop daemons (after Phase 2)
 # ============================================================
 
-if [ "$DAEMON_ENABLED" = "true" ]; then
-    write_line 'echo "[bench] Step 6: Stopping daemons..."'
-    write_line '# Signal EXIT via signal file — works under sbatch, salloc, and bare bash'
-    write_line 'IFS="," read -ra DAEMONS <<< "$DAEMON_LIST"'
-    write_line 'for _d in "${DAEMONS[@]}"; do'
-    write_line '  d=$(echo "$_d" | xargs)'
-    write_line '  [ -z "$d" ] && continue'
-    write_line '  echo "EXIT" > "${BENCH_DIR}/daemon_signals/daemon_${d}.signal" 2>/dev/null || true'
-    write_line '  echo "[bench]   signal EXIT sent to daemon_${d}"'
-    write_line 'done'
-    write_line 'echo "[bench]   waiting for daemons to exit gracefully (max 10s)..."'
-    write_line 'for pid in "${DAEMON_PIDS[@]}"; do'
-    write_line '  for i in $(seq 1 20); do'
-    write_line '    kill -0 "$pid" 2>/dev/null || break'
-    write_line '    sleep 0.5'
-    write_line '  done'
-    write_line '  kill -0 "$pid" 2>/dev/null && { kill "$pid" 2>/dev/null; echo "[bench]   force-killed PID $pid"; } || echo "[bench]   PID $pid exited cleanly"'
-    write_line 'done'
-fi
+emit_daemon_stop_block "$DAEMON_PHASE2_LIST" PHASE2_DAEMON_PIDS
 
 # ============================================================
 # Done

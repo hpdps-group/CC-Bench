@@ -14,7 +14,7 @@
  *              ncclSend, ncclRecv, ncclAllReduce, ncclAllToAll,
  *              ncclBroadcast, ncclReduce, ncclGetErrorString.
  *
- * Build (via mybench build system — communication_lib_selection.jsonc mode 3):
+ * Build (via CCBench build system — communication_lib_selection.jsonc mode 3):
  *   source_dirs: ["userconfig/wrapper_code_examples/communication/nccl_via_uccl"]
  *   include_dirs: ["plugin_projects/ccl/uccl/p2p"]
  *   libraries: ["-labspath/uccl/p2p/libuccl_p2p.so", "-lcudart", "-lcuda", "-lpthread", "-ldl"]

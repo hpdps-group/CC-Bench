@@ -30,9 +30,10 @@ typedef struct {
     metric_func_t func;     /* the compute function */
 } metric_entry_t;
 
-/** Global registry — defined in run_codes/deviation_metrics.c. */
-extern metric_entry_t g_metric_registry[];
-extern int g_metric_registry_count;
+/** Global registry — loaded at runtime from bin/libs/validation.so. */
+int init_validation_so(void);
+int validation_registry_count(void);
+const char *validation_metric_name(int idx);
 
 /* ── Helpers (non-static so metric implementations can use them) ─ */
 

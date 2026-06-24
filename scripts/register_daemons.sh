@@ -21,7 +21,7 @@
 #   - Two daemons with same <name> from different dirs → error
 
 set -euo pipefail
-cd "$(dirname "$0")/.."  # project root (mybench/)
+cd "$(dirname "$0")/.."  # project root (CCBench/)
 
 DAEMON_DIRS=(
     userconfig/daemon_code_examples
@@ -71,6 +71,21 @@ if [ -n "$CUDA_HOME_CANDIDATE" ] && [ -f "$CUDA_HOME_CANDIDATE/include/cuda.h" ]
                 break
             fi
         done
+    fi
+fi
+
+DAEMON_GPU_KERNEL_OBJ=""
+
+# If CUDA + nvcc available, pre-compile shared GPU kernel object
+GPU_KERNEL_CU="run_codes/daemons/src/daemon_gpu_burn_kernel.cu"
+if [ -n "$CUDA_INC" ] && [ -f "$GPU_KERNEL_CU" ] && command -v nvcc &>/dev/null; then
+    GPU_KERNEL_OBJ="/tmp/daemon_gpu_burn_kernel.o"
+    echo "register_daemons.sh: [nvcc] compiling $GPU_KERNEL_CU ..." >&2
+    if nvcc -arch=sm_80 -O2 -c "$GPU_KERNEL_CU" -o "$GPU_KERNEL_OBJ" 2>&1; then
+        DAEMON_GPU_KERNEL_OBJ="$GPU_KERNEL_OBJ"
+        echo "register_daemons.sh:   -> $GPU_KERNEL_OBJ" >&2
+    else
+        echo "register_daemons.sh:   [WARNING] nvcc failed; GPU stress daemon won't link" >&2
     fi
 fi
 
@@ -145,10 +160,12 @@ for entry in $FILES; do
     # Auto-detect if this daemon needs CUDA
     DAEMON_EXTRA_INC=""
     DAEMON_EXTRA_LIBS=""
-    if grep -q '#include.*cuda\.h' "$src" 2>/dev/null; then
+    DAEMON_EXTRA_OBJS=""
+    if grep -q '#include.*cuda\.h\|#include.*cuda_runtime\.h' "$src" 2>/dev/null; then
         if [ -n "$CUDA_INC" ]; then
             DAEMON_EXTRA_INC="$CUDA_INC"
-            DAEMON_EXTRA_LIBS="$CUDA_LIB"
+            DAEMON_EXTRA_LIBS="$CUDA_LIB -lcudart"
+            DAEMON_EXTRA_OBJS="$DAEMON_GPU_KERNEL_OBJ"
             echo "register_daemons.sh:   [CUDA detected]" >&2
         else
             echo "register_daemons.sh:   [WARNING: CUDA not found — $name may fail]" >&2
@@ -157,7 +174,7 @@ for entry in $FILES; do
 
     echo "register_daemons.sh: compiling $out ..." >&2
     gcc -O2 -march=x86-64 -Wall -Wextra "$HELPER_INC" $DAEMON_EXTRA_INC \
-        "$HELPER_SRC" "$src" -o "$out" -lm -lpthread $DAEMON_EXTRA_LIBS
+        "$HELPER_SRC" "$src" $DAEMON_EXTRA_OBJS -o "$out" -lm -lpthread $DAEMON_EXTRA_LIBS
 done
 
 if [ "$DRY_RUN" = "--dry-run" ]; then
@@ -165,3 +182,6 @@ if [ "$DRY_RUN" = "--dry-run" ]; then
 fi
 
 echo "register_daemons.sh: done — $(echo "$FILES" | wc -l) daemon(s) in $OUTPUT_DIR/" >&2
+
+# Clean up pre-compiled GPU kernel object
+[ -n "$DAEMON_GPU_KERNEL_OBJ" ] && rm -f "$DAEMON_GPU_KERNEL_OBJ"

@@ -22,7 +22,7 @@ from __future__ import print_function
 import os
 import re
 import sys
-import csv
+import csv; csv.field_size_limit(2**31 - 1)
 import argparse
 import itertools
 from collections import OrderedDict, defaultdict
@@ -47,6 +47,8 @@ def classify_device(devname):
         return 'cpu_agg'
     if devname.startswith('cpu'):
         return 'cpu'
+    if devname.startswith('gpu'):
+        return 'gpu'
     if devname.startswith('ib'):
         return 'ib'
     if devname.startswith('pcie'):
@@ -254,7 +256,8 @@ def order_devices(grouped, mapping, node_ranks):
 # -- data loading -------------------------------------------------------------
 
 def load_perf_data(perf_dir, metric_col=None, scale_override=None,
-                   time_start=None, time_end=None, bounds=None):
+                   time_start=None, time_end=None, bounds=None,
+                   t_start=None, t_end=None):
     """Read all perf CSVs and return structured data.
 
     Returns: (ordered_rows, time_rel, data_matrix, raw_matrix, row_meta)
@@ -311,16 +314,40 @@ def load_perf_data(perf_dir, metric_col=None, scale_override=None,
     t0 = time_axis[0]
     time_rel = time_axis - t0
 
-    # Time range filter
+    # Time range filter (absolute timestamps)
     if time_start is not None or time_end is not None:
         mask = np.ones(len(time_rel), dtype=bool)
         if time_start is not None:
             mask &= (time_rel + t0 >= time_start)
         if time_end is not None:
             mask &= (time_rel + t0 <= time_end)
-        if np.any(mask):
-            time_axis = time_axis[mask]
-            time_rel = time_rel[mask]
+        if not np.any(mask):
+            print('Error: --from-ts={} --to-ts={} filters out all data '
+                  '(actual range: {:.1f}s - {:.1f}s)'.format(
+                      time_start, time_end, time_rel[0] + t0, time_rel[-1] + t0),
+                  file=sys.stderr)
+            return None, None, None, None, None
+        time_axis = time_axis[mask]
+        time_rel = time_rel[mask]
+
+    # Time range filter (relative seconds from start)
+    if t_start is not None or t_end is not None:
+        mask = np.ones(len(time_rel), dtype=bool)
+        if t_start is not None:
+            mask &= (time_rel >= t_start)
+        if t_end is not None:
+            mask &= (time_rel <= t_end)
+        if not np.any(mask):
+            print('Error: --t-start={} --t-end={} filters out all data '
+                  '(actual range: {:.1f}s - {:.1f}s)'.format(
+                      t_start, t_end, time_rel[0], time_rel[-1]),
+                  file=sys.stderr)
+            return None, None, None, None, None
+        time_axis = time_axis[mask]
+        time_rel = time_rel[mask]
+        # Rebase t0 to new start
+        t0 = time_axis[0]
+        time_rel = time_axis - t0
 
     n_devices = len(ordered)
     n_times = len(time_axis)
@@ -408,45 +435,39 @@ def draw_heatmap(time_rel, data_matrix, raw_matrix, ordered, row_meta,
     import matplotlib.pyplot as plt
     from matplotlib.widgets import Slider
 
+    time_span = time_rel[-1] - time_rel[0] if len(time_rel) > 1 else 1.0
     fig_height = max(6, n_devices * 0.35)
-    fig_width = max(10, n_times * 0.02)
+    fig_width = max(10, time_span * 1.2)
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
 
-    cmap = plt.cm.hot
+    cmap = plt.cm.Blues
     im = ax.imshow(data_matrix, aspect='auto', cmap=cmap,
                    interpolation='nearest', vmin=0, vmax=1)
 
-    # Y-axis labels
-    labels = []
-    for meta in row_meta:
-        label = 'node{}|{}'.format(meta['node'], meta['devname'])
-        if meta['rank'] is not None:
-            label += ' (r{})'.format(meta['rank'])
-        if meta['metric'] is not None:
-            label = label + ' [{}]'.format(meta['metric'])
-        b = meta.get('bounds')
-        if b is not None:
-            label += ' {{{},{}}}'.format(b[0], b[1])
-        labels.append(label)
+    # Y-axis labels (just devname, e.g. gpu_0, ib_mlx5_0_p1)
+    labels = [meta['devname'] for meta in row_meta]
 
     ax.set_yticks(range(n_devices))
-    ax.set_yticklabels(labels, fontsize=6)
+    ax.set_yticklabels(labels, fontsize=18)
     for idx, meta in enumerate(row_meta):
         if meta['mapped']:
             ax.get_yticklabels()[idx].set_weight('bold')
             ax.get_yticklabels()[idx].set_color('black')
         else:
             ax.get_yticklabels()[idx].set_color('gray')
-    ax.set_ylabel('Device', fontsize=8)
+    ax.set_ylabel('Device', fontsize=26, labelpad=60)
+    ax.yaxis.set_label_coords(-0.22, 0.3)
 
-    # X-axis
-    n_xticks = min(30, n_times)
-    tick_step = max(1, n_times // n_xticks)
-    xticks = range(0, n_times, tick_step)
-    ax.set_xticks(xticks)
-    ax.set_xticklabels(['{:.1f}s'.format(time_rel[i]) for i in xticks],
-                       fontsize=6, rotation=45)
-    ax.set_xlabel('Time (seconds from start)', fontsize=8)
+    # X-axis — evenly spaced integer-second ticks
+    n_ticks = 20
+    t_span = time_rel[-1] - time_rel[0]
+    step_s = max(1, int(t_span / n_ticks))
+    targets = range(0, int(t_span) + 1, step_s)
+    shown = [np.argmin(np.abs(time_rel - t)) for t in targets]
+    ax.set_xticks(shown)
+    ax.set_xticklabels(['{}'.format(int(time_rel[i])) for i in shown],
+                       fontsize=18)
+    ax.set_xlabel('Time (seconds)', fontsize=22)
 
     # Node separators
     sep_color = '#1f77b4'
@@ -462,14 +483,25 @@ def draw_heatmap(time_rel, data_matrix, raw_matrix, ordered, row_meta,
     # Detect if any row uses explicit bounds
     has_bounds = any(m.get('bounds') is not None for m in row_meta)
     if has_bounds:
-        cbar.set_label('Normalized activity (clamped to bounds)', fontsize=7)
+        parts = []
+        seen = set()
+        for m in row_meta:
+            b = m.get('bounds')
+            if b and b not in seen:
+                seen.add(b)
+                metric = m['metric']
+                # Strip common suffixes for compact display
+                short = metric.replace('_util', '').replace('_bw_Bps', '').replace('_Bps', '')
+                parts.append('{}[{},{}]'.format(short, int(b[0]), int(b[1])))
+        label = 'util: ' + '  '.join(parts)
+        cbar.set_label(label, fontsize=16)
     else:
-        cbar.set_label('Normalized activity (0=min, 1=max)', fontsize=7)
+        cbar.set_label('Norm. activity (0=min, 1=max)', fontsize=16)
     for t in cbar.ax.get_yticklabels():
-        t.set_fontsize(6)
+        t.set_fontsize(18)
 
     if title:
-        ax.set_title(title, fontsize=10)
+        ax.set_title(title, fontsize=26)
 
     ax.set_ylim(n_devices - 0.5, -0.5)
     ax.grid(False)
@@ -520,6 +552,12 @@ def main():
                         help='Filter: start timestamp (absolute)')
     parser.add_argument('--to-ts', type=float, default=None,
                         help='Filter: end timestamp (absolute)')
+    parser.add_argument('--t-start', type=float, default=None,
+                        help='Filter: start time in seconds from first timestamp '
+                             '(e.g. 0 for beginning). Overrides --from-ts.')
+    parser.add_argument('--t-end', type=float, default=None,
+                        help='Filter: end time in seconds from first timestamp '
+                             '(e.g. 110 for 110s mark). Overrides --to-ts.')
     parser.add_argument('--save', default=None,
                         help='Save to file instead of interactive display')
     parser.add_argument('--title', default=None,
@@ -554,7 +592,8 @@ def main():
     bounds_dict = parse_bounds(args.bounds)
 
     result = load_perf_data(args.dir, metric_col, args.scale,
-                            args.from_ts, args.to_ts, bounds_dict)
+                            args.from_ts, args.to_ts, bounds_dict,
+                            args.t_start, args.t_end)
     ordered, time_rel, data_matrix, raw_matrix, row_meta = result
 
     if time_rel is None:

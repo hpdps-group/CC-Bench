@@ -60,14 +60,18 @@ INC_DIR="run_codes/benchmark-core/include"
 
 # ---- Collect all benchmark directories ----
 TESTS=()
+declare -A TEST_EXT
 for d in "$BENCH_DIR/$ARCH"/*/; do
     [ -d "$d" ] || continue
     test_name=$(basename "$d")
-    test_src="$d/$test_name.c"
-    if [ -f "$test_src" ]; then
+    if [ -f "$d/$test_name.c" ]; then
         TESTS+=("$test_name")
+        TEST_EXT["$test_name"]=".c"
+    elif [ -f "$d/$test_name.cu" ]; then
+        TESTS+=("$test_name")
+        TEST_EXT["$test_name"]=".cu"
     else
-        echo "[build_tests] warning: no $test_name.c in $d, skipping"
+        echo "[build_tests] warning: no $test_name.c(.cu) in $d, skipping"
     fi
 done
 
@@ -82,7 +86,11 @@ echo "[build_tests] benchmarks found: ${TESTS[*]}"
 # ---- Collect framework sources (base + arch-specific) ----
 FRAME_SRCS=()
 for f in "$CORE_SRC"/*.c; do
-    [ -f "$f" ] && FRAME_SRCS+=("$f")
+    [ -f "$f" ] || continue
+    case "$(basename "$f")" in
+        deviation_metrics.c) continue ;;  # loaded at runtime from validation.so
+    esac
+    FRAME_SRCS+=("$f")
 done
 for f in "$CORE_SRC/$ARCH"/*.c; do
     [ -f "$f" ] && FRAME_SRCS+=("$f")
@@ -134,7 +142,8 @@ echo "[build_tests] framework sources (${#FRAME_SRCS[@]}): ${FRAME_SRCS[*]}"
 
 # ---- Compile each benchmark ----
 for test_name in "${TESTS[@]}"; do
-    test_src="$BENCH_DIR/$ARCH/$test_name/$test_name.c"
+    ext="${TEST_EXT[$test_name]:-.c}"
+    test_src="$BENCH_DIR/$ARCH/$test_name/$test_name$ext"
     out_dir="bin/$ARCH/$test_name"
     out_bin="$out_dir/$test_name"
 

@@ -1,26 +1,26 @@
 {
   /*
-    压缩内核接入选择（Compression Kernel Selection）
+    Compression Kernel Selection
 
     mode 0 — bare
-      无压缩 baseline，直接测裸性能。
-      不需要任何字段。
+      Baseline without compression, test raw performance.
+      No fields required.
 
     mode 1 — direct-lib
-      用户提供预编译 .so。
-      需要: library_paths
+      User provides precompiled .so.
+      Requires: library_paths
 
     mode 2 — lib+wrapper
-      用户提供预编译 .so + wrapper 源码一起编译。
-      需要: library_paths, source_{files,dirs}, include_{files,dirs}
+      User provides precompiled .so + wrapper source code compiled together.
+      Requires: library_paths, source_{files,dirs}, include_{files,dirs}
 
     mode 3 — pure code wrapper
-      用户提供源码 + wrapper 源码，全部编译为 .so。
-      需要: source_{files,dirs}, include_{files,dirs}
+      User provides source code + wrapper source, all compiled into .so.
+      Requires: source_{files,dirs}, include_{files,dirs}
 
-    === 示例 ===
-    wrapper_code_examples/compression/sz3/ 下（sz3 mode 1 示例）:
-   用户自定义实现请放在 your_wrapper_code/compression/ 下。
+    === Examples ===
+    See wrapper_code_examples/compression/sz3/ for an SZ3 (mode 1) example.
+    Custom implementations should be placed in your_wrapper_code/compression/.
   */
   "mode": 0,
 

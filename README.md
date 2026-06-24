@@ -1,6 +1,6 @@
-# mybench — High-Performance Communication & Compression Benchmark Framework
+# CCBench — High-Performance Communication & Compression Benchmark Framework
 
-mybench is a modular benchmark framework for HPC scenarios, supporting **MPI / NCCL / RCCL** communication backends. It leverages `LD_PRELOAD`-based instrumentation to decouple communication compression, performance profiling, and background monitoring.
+CCBench is a modular benchmark framework for HPC scenarios, supporting **MPI / NCCL / RCCL** communication backends. It leverages `LD_PRELOAD`-based instrumentation to decouple communication compression, performance profiling, and background monitoring.
 
 ## Workflow
 
@@ -11,6 +11,39 @@ Config (userconfig/*.jsonc) → Build (build_script.sh) → Run (scripts/run/*)
 1. Configure benchmark parameters in `userconfig/config_in_jsonc/`
 2. Run `scripts/build_script.sh` — compiles wrapper libraries and generates run scripts
 3. Execute the generated scripts (local / srun / sbatch) to start testing
+
+---
+
+## 🤖 Automatic Configuration via Claude Code
+
+CCBench ships with a **Claude Code Skill** (`configure-bench`) that can automatically detect your environment, ask you for key decisions, and generate all configuration files.
+
+The skill is located at `.claude/skills/configure-bench/` and is **auto-discovered** by Claude Code — no registration needed. Just run Claude Code in the project root and the skill is ready to use.
+
+### Usage
+
+In Claude Code (working in the `CCBench/` directory), just say:
+
+```
+/configure-bench
+```
+
+Or describe what you want:
+
+```
+setup CCBench with NCCL AllReduce + UCCL wrapper
+```
+
+The agent will:
+
+1. **Detect** — Probe hardware (CPU/GPU/IB), network, SLURM, compilers, plugins
+2. **Analyze** — Present a concise environment summary
+3. **Ask** — Guide you through key configuration decisions with smart defaults
+4. **Generate** — Write all 8 JSONC config files
+5. **Wrapper** — Optionally generate communication/compression wrapper code
+6. **Confirm** — Show a full configuration summary for your final approval
+
+> ⚠️ The skill provides intelligent defaults based on your environment, but **does not guarantee first-run success**. If the build or run fails, share the error logs with Claude for iterative fixes. See `.claude/skills/configure-bench/SKILL.md` for the full workflow documentation.
 
 ---
 

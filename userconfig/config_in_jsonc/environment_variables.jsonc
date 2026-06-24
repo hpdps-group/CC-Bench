@@ -1,15 +1,15 @@
 {
   /*
-    运行时环境变量配置
-    这些变量会被注入到作业脚本（SLURM）或 mpirun 环境中，
-    供 benchmark 程序和 wrapper 代码通过 getenv() 读取。
+    Runtime Environment Variable Configuration
+    These variables are injected into job scripts (SLURM) or the mpirun environment,
+    accessible by benchmark programs and wrapper code via getenv().
 
-    注意：
-    - 所有运行时环境变量都统一放在这里，包括 wrapper 代码需要的变量。
-    - 架构选择（mpi/nccl/rccl）等编译期选项请放在 bench_basic_config.jsonc 中。
+    Notes:
+    - All runtime environment variables are centralized here, including those needed by wrappers.
+    - Compile-time options like architecture selection (mpi/nccl/rccl) go in bench_basic_config.jsonc.
   */
 
-  /* 通信库/运行时环境变量 */
+  /* Communication lib / runtime environment variables */
   /*
   "NCCL_DEBUG": "INFO",
   "NCCL_SOCKET_IFNAME": "eth0",
@@ -17,18 +17,18 @@
   "OMP_NUM_THREADS": "8",
   */
 
-  /* Wrapper 通用环境变量 */
+  /* Wrapper general environment variables */
   "MPI_TOLERANCE": "1e-5",
   "MPI_BLOCK_SIZE": "1024",
   /* "NCCL_DEBUG":"INFO",
   "NCCL_DEBUG_SUBSYS": "NET",
   "CUDA_LAUNCH_BLOCKING": "1",    */
 
-  /* UCX / InfiniBand 传输配置 */
+  /* UCX / InfiniBand transport configuration */
   "UCX_TLS": "rc,self,sm",
   "UCX_NET_DEVICES": "mlx5_0:1",
 
-  /* Wrapper 环境变量 — 按需写 */
+  /* Wrapper-specific environment variables — add as needed */
   /* "SZ3_ABS_EB": "1e-6",
    "SZ3_TYPE": "0",
    "MPI_SZ3_LIB_PATH": "",
@@ -36,86 +36,87 @@
    "DIETGPU_DEVICE_ID": "0" */
 
   /*
-    Allgatherv / Scatterv 权重配置
+    Allgatherv / Scatterv Weight Configuration
 
-    每个 rank 的数据量按权重比例分配，基准 msg_size 乘以权重决定实际传输量。
-    逗号分隔，长度必须等于进程数。不设置则回退均匀分布（退化为标准 Allgather/Scatter）。
+    Data per rank is allocated proportionally by weight: base msg_size is multiplied by the weight.
+    Comma-separated, length must equal the number of processes.
+    If unset, falls back to uniform distribution (degenerates to standard Allgather/Scatter).
 
-    例（4 进程，不均匀分布）：
-     rank:      0     1     2     3
-                ↓     ↓     ↓     ↓
-    ALLGATHERV_WEIGHTS 为 "1,1,2,4"
-    SCATTERV_WEIGHTS   为 "4,2,1,1"
-    则 rank 3 收到 4/(1+1+2+4) = 50% 的数据，rank 0 收到 12.5%
+    Example (4 processes, non-uniform distribution):
+     rank:       0     1     2     3
+                 ↓     ↓     ↓     ↓
+    ALLGATHERV_WEIGHTS = "1,1,2,4"
+    SCATTERV_WEIGHTS   = "4,2,1,1"
+    rank 3 receives 4/(1+1+2+4) = 50% of data, rank 0 receives 12.5%
 
-    未来扩展（Alltoallv 等）：
-    二维数组扁平化为逗号串，行主序排列，长度 = size*size。
-    解析器 parse_env_int_array() 天然支持任意长度一维展开。
+    Future extension (Alltoallv, etc.):
+    2D arrays flattened to comma strings, row-major order, length = size*size.
+    The parser parse_env_int_array() naturally supports arbitrary-length 1D expansion.
   */
   "ALLGATHERV_WEIGHTS": "1,2,3,4",
   "SCATTERV_WEIGHTS": "4,3,2,1",
 
   /* ================================================================
-     UCCL-collective 配置
+     UCCL-collective Configuration
 
-     UCCL-collective（又称 UCCL-Tran）是 NCCL 的 NET plugin，
-     通过 NCCL_NET_PLUGIN 加载，不需要 LD_PRELOAD。
+     UCCL-collective (a.k.a. UCCL-Tran) is an NCCL NET plugin,
+     loaded via NCCL_NET_PLUGIN, no LD_PRELOAD needed.
 
-     使用步骤：
-       1. 编译 UCCL → 产出 libnccl-net-uccl.so
-       2. communication_lib_selection.jsonc 设 mode=0（bare，不加 LD_PRELOAD）
-       3. 设置 NCCL_NET_PLUGIN 指向 libnccl-net-uccl.so
-       4. 使用系统 NCCL（不要 LD_PRELOAD COCCL）
+     Usage steps:
+       1. Build UCCL → produces libnccl-net-uccl.so
+       2. Set communication_lib_selection.jsonc mode=0 (bare, no LD_PRELOAD)
+       3. Set NCCL_NET_PLUGIN to point to libnccl-net-uccl.so
+       4. Use system NCCL (do NOT LD_PRELOAD COCCL)
      ================================================================ */
 
-  /* ── UCCL NET Plugin 路径 ───────────────────────────────────── */
-  /* "LD_LIBRARY_PATH": "/data/run01/scyb672/fhz/mybench/bin/libs:$LD_LIBRARY_PATH", */
-  /* "NCCL_NET_PLUGIN": "uccl",  */
+  /* ── UCCL NET Plugin path ────────────────────────────────────── */
+  "LD_LIBRARY_PATH": "bin/libs:$LD_LIBRARY_PATH",
+   "NCCL_NET_PLUGIN": "uccl",
 
-  /* ── UCCL 网卡/控制网口 ─────────────────────────────────────── */
+  /* ── UCCL HCA / control interface ──────────────────────────── */
   //  "UCCL_DEBUG_VLOG_LEVEL": "1",
- /* "UCCL_DEBUG":"ERROR",
+  "UCCL_DEBUG":"ERROR",
   "UCCL_DEBUG_SUBSYS": "ERROR", 
   "UCCL_P2P_LOG_LEVEL": "ERROR",
   "UCCL_P2P_COMPRESS_STRATEGY":"split_encode",
   "UCCL_P2P_POLL_TIMEOUT_MS": "60000",
   "UCCL_IB_HCA": "mlx5_0,mlx5_1,mlx5_4,mlx5_5",
-    "UCCL_SOCKET_IFNAME": "bond0",  */
+   "UCCL_SOCKET_IFNAME": "bond0",
 
-  /* ── UCCL 调优参数（可选）───────────────────────────────────── */
+  /* ── UCCL tuning parameters (optional) ──────────────────────── */
   /* "UCCL_CHUNK_SIZE_KB": "64" */
   /* "UCCL_NUM_ENGINES": "4" */
   /* "UCCL_PORT_ENTROPY": "32" */
 
   /* ================================================================
-     COCCL 压缩配置（已启用，LD_PRELOAD 模式）
+     COCCL compression configuration (currently disabled, using UCCL-collective instead)
 
-     communication_lib_selection.jsonc:
-       - mode=1
-       - library_paths = plugin_projects/ccl/coccl/build/lib/libnccl.so
+     To re-enable COCCL compression, uncomment the variables below and:
+       - Set communication_lib_selection.jsonc mode=1
+       - Point library_paths to coccl/build/lib/libnccl.so
      ================================================================ */
-  
+  /*
   "NCCL_ENABLE_COMPRESS": "1",
-  "NCCL_COMPRESSORS": "sdp4bit",
-  "NCCL_COMPRESSORS_LIB_PATH": "/data/run01/scyb672/fhz/mybench/plugin_projects/ccl/coccl/build/obj/device/compress/libcompress",
-  "NCCL_COMPRESSORS_CONFIG_PATH": "/data/run01/scyb672/fhz/mybench/plugin_projects/ccl/coccl/src/device/compress/configs",
+  "NCCL_COMPRESSORS": "tahquant:sdp4bit",
+  "NCCL_COMPRESSORS_LIB_PATH": "plugin_projects/ccl/coccl/build/obj/device/compress/libcompress",
+  "NCCL_COMPRESSORS_CONFIG_PATH": "plugin_projects/ccl/coccl/src/device/compress/configs",
   "NCCL_ENABLE_ALLTOALL_COMPRESS": "1",
-  "NCCL_ALLTOALL_COMPRESSORS": "sdp4bit",
-  "NCCL_ALLTOALL_INTER_COMPRESSORS": "sdp4bit",
+  "NCCL_ALLTOALL_COMPRESSORS": "tahquant:sdp4bit",
+  "NCCL_ALLTOALL_INTER_COMPRESSORS": "tahquant:sdp4bit",
   "NCCL_ENABLE_ALLREDUCE_COMPRESS": "1",
-  "NCCL_ALLREDUCE_COMPRESSORS": "sdp4bit",
-  "NCCL_ALLREDUCE_INTER_COMPRESSORS": "sdp4bit",
+  "NCCL_ALLREDUCE_COMPRESSORS": "tahquant:sdp4bit",
+  "NCCL_ALLREDUCE_INTER_COMPRESSORS": "tahquant:sdp4bit",
   "NCCL_ENABLE_ALLGATHER_COMPRESS": "1",
-  "NCCL_ALLGATHER_COMPRESSORS": "sdp4bit",
-  "NCCL_ALLGATHER_INTER_COMPRESSORS": "sdp4bit",
+  "NCCL_ALLGATHER_COMPRESSORS": "tahquant:sdp4bit",
+  "NCCL_ALLGATHER_INTER_COMPRESSORS": "tahquant:sdp4bit",
   "NCCL_ENABLE_REDUCESCATTER_COMPRESS": "1",
-  "NCCL_REDUCESCATTER_COMPRESSORS": "sdp4bit",
-  "NCCL_REDUCESCATTER_INTER_COMPRESSORS": "sdp4bit",
+  "NCCL_REDUCESCATTER_COMPRESSORS": "tahquant:sdp4bit",
+  "NCCL_REDUCESCATTER_INTER_COMPRESSORS": "tahquant:sdp4bit",
   "NCCL_ENABLE_SENDRECV_COMPRESS": "1",
-  "NCCL_SENDRECV_COMPRESSORS": "sdp4bit",
-  "NCCL_SENDRECV_BWD_COMPRESSORS": "sdp4bit",
+  "NCCL_SENDRECV_COMPRESSORS": "tahquant",
+  "NCCL_SENDRECV_BWD_COMPRESSORS": "tahquant",
   "NCCL_ENABLE_CHECK": "0",
   "NCCL_ENABLE_TIMER": "0"
-  
+  */
   /* "COMPRESS_ENABLE_THRESHOLD": "1048576" */
 }

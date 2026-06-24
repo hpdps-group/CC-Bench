@@ -275,6 +275,7 @@ static void print_usage(const char *prog_name) {
     printf("  -o PATH           CSV output path (default: results/<test_name>.csv)\n");
     printf("  -b                Enable binary output (reference + user data dump)\n");
     printf("  -B PATH           Binary output base path (used as basename)\n");
+    printf("  -A                Add mode (INCR is added each step, default: multiply)\n");
     printf("  -L X,Y,Z          Explicit message size list (overrides -m)\n");
     printf("  -S DIR            Save reference: run once, save result to DIR, exit\n");
     printf("  -R DIR            Load reference from DIR instead of computing internally\n");
@@ -286,6 +287,7 @@ test_config_t parse_arguments(int argc, char **argv) {
         .min_message_size = DEFAULT_MIN_SIZE,
         .max_message_size = DEFAULT_MAX_SIZE,
         .message_size_incr = DEFAULT_INCR,
+        .message_size_incr_mode = 0,
         .iterations = DEFAULT_ITERATIONS,
         .warmup_iterations = DEFAULT_WARMUP,
         .input_file = NULL,
@@ -301,7 +303,7 @@ test_config_t parse_arguments(int argc, char **argv) {
     };
 
     int opt;
-    while ((opt = getopt(argc, argv, "d:m:i:w:f:t:vMhe:p:co:L:bB:S:R:")) != -1) {
+    while ((opt = getopt(argc, argv, "d:m:i:w:f:t:vMhe:p:co:L:bB:S:R:A")) != -1) {
         switch (opt) {
             case 'm': {
                 char *token = strtok(optarg, ":");
@@ -329,7 +331,7 @@ test_config_t parse_arguments(int argc, char **argv) {
                 break;
             case 'M':
                 config.compute_metrics = 1;
-                config.metrics_mask = (1u << g_metric_registry_count) - 1;
+                config.metrics_mask = (1u << validation_registry_count()) - 1;
                 break;
             case 'e':
                 config.compute_metrics = 1;
@@ -378,6 +380,9 @@ test_config_t parse_arguments(int argc, char **argv) {
                 config.ref_dir[sizeof(config.ref_dir) - 1] = '\0';
                 config.validate = 1;  /* -R implies validation */
                 break;
+            case 'A':
+                config.message_size_incr_mode = 1;
+                break;
             case 'L': {
                 config.use_size_list = 1;
                 config.num_sizes = 0;
@@ -411,6 +416,7 @@ void size_iter_init(size_iter_t *it, const test_config_t *config) {
     it->min_size  = config->min_message_size;
     it->max_size  = config->max_message_size;
     it->incr      = config->message_size_incr;
+    it->incr_mode = config->message_size_incr_mode;
     it->num_sizes = config->num_sizes;
     if (it->use_list) {
         for (int i = 0; i < it->num_sizes; i++)
@@ -425,9 +431,16 @@ int size_iter_next(size_iter_t *it, size_t *size) {
         return 1;
     }
 
-    size_t s = it->min_size;
-    for (int i = 0; i < it->index; i++)
-        s *= it->incr;
+    size_t s;
+    if (it->incr_mode == 0) {
+        /* multiply: s = min * incr^index */
+        s = it->min_size;
+        for (int i = 0; i < it->index; i++)
+            s *= it->incr;
+    } else {
+        /* add: s = min + index * incr */
+        s = it->min_size + (size_t)it->index * it->incr;
+    }
     it->index++;
     if (s > it->max_size) return 0;
     *size = s;

@@ -20,7 +20,7 @@
 #   - bin/libs/libjob_device_mapper.so               (shared library)
 
 set -euo pipefail
-cd "$(dirname "$0")/.."  # project root (mybench/)
+cd "$(dirname "$0")/.."  # project root (CCBench/)
 
 MAPPER_DIRS=(
     userconfig/job_device_mapper_examples

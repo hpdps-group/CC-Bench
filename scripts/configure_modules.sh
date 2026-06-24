@@ -1,50 +1,50 @@
 #!/bin/bash
 
-# 检查是否被 source 执行
+# Check if sourced
 if [[ "$0" == "$BASH_SOURCE" ]]; then
-    echo "错误: 请用 'source configure_modules.sh' 执行此脚本"
+    echo "Error: This script must be sourced. Usage: source configure_modules.sh"
     echo "Usage: source configure_modules.sh"
     exit 1
 fi
 
-# 颜色定义（可选）
+# Color definitions (optional)
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# 全局变量
+# Global variables
 SELECTED_MODULES=()
 
-# 函数：获取当前加载的模块
+# Function: get currently loaded modules
 get_loaded_modules() {
-    # 解析 module list 输出，提取模块名
+    # Parse module list output, extract module names
     module list 2>&1 | grep -v "Currently Loaded Modulefiles:" | grep -v "^$" | \
     while read line; do
-        # 使用正则表达式提取所有 "数字) 模块名" 的模式
-        # 例如: "  1) compiler/dtk/22.04.2        3) mpi/hpcx/gcc-7.3.1"
+        # Use regex to extract all "number) modulename" patterns
+        # e.g., "  1) compiler/dtk/22.04.2        3) mpi/hpcx/gcc-7.3.1"
         while [[ $line =~ [[:space:]]*([0-9]+)\)[[:space:]]+([^[:space:]]+) ]]; do
             echo "${BASH_REMATCH[2]}"
-            # 移除已匹配的部分，继续匹配
+            # Remove matched part and continue
             line="${line#*${BASH_REMATCH[2]}}"
         done
     done
 }
 
-# 函数：获取可用模块
+# Function: get available modules
 get_available_modules() {
     local pattern="$1"
-    # 获取所有可用模块
+    # Get all available modules
     module avail 2>&1 | grep -v "^--" | grep -v "^$" | while read line; do
-        # 跳过标题行
+        # Skip header lines
         if [[ $line =~ ^[[:space:]]*$ ]] || [[ $line =~ ^- ]]; then
             continue
         fi
 
-        # 分割行中的多个模块名
+        # Split multiple module names on a line
         for module in $line; do
-            # 有效的模块名包含斜杠且不是括号
+            # Valid module names contain a slash and are not parenthesized
             if [[ $module == */* ]] && [[ $module != "("* ]] && [[ $module != *")" ]]; then
                 echo "$module"
             fi
@@ -52,34 +52,34 @@ get_available_modules() {
     done | sort -u
 }
 
-# 函数：从列表中选择
+# Function: select from a list
 select_from_list() {
     local items=("${@}")
     local count=${#items[@]}
 
     if [[ $count -eq 0 ]]; then
-        echo "没有可选项" >&2
+        echo "No items available" >&2
         return 1
     fi
 
-    # 显示选项（输出到stderr，避免被命令替换捕获）
+    # Display options (to stderr to avoid being captured by command substitution)
     for i in "${!items[@]}"; do
         printf "  %3d) %s\n" $((i+1)) "${items[$i]}" >&2
     done
 
     while true; do
-        read -p "请选择 (1-$count, 或 0 取消): " choice
+        read -p "Select (1-$count, or 0 to cancel): " choice
 
-        # 检查是否为数字
+        # Check if numeric
         if [[ ! $choice =~ ^[0-9]+$ ]]; then
-            echo "请输入数字" >&2
+            echo "Please enter a number" >&2
             continue
         fi
 
         choice=$((choice))
 
         if [[ $choice -eq 0 ]]; then
-            echo "已取消" >&2
+            echo "Cancelled" >&2
             return 1
         fi
 
@@ -88,17 +88,17 @@ select_from_list() {
             return 0
         fi
 
-        echo "无效的选择" >&2
+        echo "Invalid selection" >&2
     done
 }
 
-# 函数：搜索并添加模块
+# Function: search and add module
 search_and_add_module() {
-    read -p "输入搜索模式 (直接回车显示所有): " pattern
+    read -p "Enter search pattern (press Enter to show all): " pattern
 
-    echo "搜索模块中..."
+    echo "Searching modules..."
 
-    # 获取所有模块
+    # Get all modules
     local all_modules=($(get_available_modules))
     local matched_modules=()
 
@@ -113,14 +113,14 @@ search_and_add_module() {
     fi
 
     if [[ ${#matched_modules[@]} -eq 0 ]]; then
-        echo "未找到匹配的模块"
-        read -p "按回车继续..."
+        echo "No matching modules found"
+        read -p "Press Enter to continue..."
         return
     fi
 
-    echo "找到 ${#matched_modules[@]} 个模块:"
+    echo "Found ${#matched_modules[@]} modules:"
 
-    # 选择模块
+    # Select module
     local selected_module
     selected_module=$(select_from_list "${matched_modules[@]}")
 
@@ -128,10 +128,10 @@ search_and_add_module() {
         return
     fi
 
-    # 检查冲突
+    # Check conflicts
     local conflicts=()
     for existing in "${SELECTED_MODULES[@]}"; do
-        # 简单的冲突检测：相同前缀可能冲突
+        # Simple conflict detection: same prefix may conflict
         local prefix1="${selected_module%%/*}"
         local prefix2="${existing%%/*}"
         if [[ "$prefix1" == "$prefix2" ]]; then
@@ -140,17 +140,17 @@ search_and_add_module() {
     done
 
     if [[ ${#conflicts[@]} -gt 0 ]]; then
-        echo -e "${YELLOW}警告: 模块 $selected_module 可能与以下模块冲突:${NC}"
+        echo -e "${YELLOW}Warning: Module $selected_module may conflict with:${NC}"
         for conflict in "${conflicts[@]}"; do
             echo "  - $conflict"
         done
 
-        read -p "是否替换冲突模块? (y/N): " replace
+        read -p "Replace conflicting modules? (y/N): " replace
         if [[ ${replace,,} == "y" ]]; then
-            # 移除冲突模块
+            # Remove conflicting modules
             for conflict in "${conflicts[@]}"; do
                 SELECTED_MODULES=("${SELECTED_MODULES[@]/$conflict}")
-                # 重新构建数组，移除空元素
+                # Rebuild array, remove empty elements
                 local new_array=()
                 for item in "${SELECTED_MODULES[@]}"; do
                     if [[ -n "$item" ]]; then
@@ -160,59 +160,59 @@ search_and_add_module() {
                 SELECTED_MODULES=("${new_array[@]}")
             done
             SELECTED_MODULES+=("$selected_module")
-            echo -e "${GREEN}已添加模块 $selected_module (替换了冲突模块)${NC}"
+            echo -e "${GREEN}Added module $selected_module (replaced conflicting modules)${NC}"
 
-            # 询问是否立即执行替换
-            read -p "是否立即执行替换（卸载冲突模块，加载新模块）? (Y/n): " execute_now
+            # Ask whether to execute replacement immediately
+            read -p "Apply replacement now (unload conflicts, load new module)? (Y/n): " execute_now
             if [[ -z "$execute_now" ]] || [[ ${execute_now,,} == "y" ]]; then
-                # 先卸载冲突模块
+                # Unload conflicting modules first
                 for conflict in "${conflicts[@]}"; do
-                    echo -n "卸载 $conflict... "
+                    echo -n "Unloading $conflict... "
                     if module unload "$conflict" 2>&1; then
-                        echo -e "${GREEN}成功${NC}"
+                        echo -e "${GREEN}OK${NC}"
                     else
-                        echo -e "${RED}失败${NC}"
+                        echo -e "${RED}Failed${NC}"
                     fi
                 done
-                # 加载新模块
-                echo -n "加载 $selected_module... "
+                # Load new module
+                echo -n "Loading $selected_module... "
                 if module load "$selected_module" 2>&1; then
-                    echo -e "${GREEN}成功${NC}"
+                    echo -e "${GREEN}OK${NC}"
                 else
-                    echo -e "${RED}失败${NC}"
+                    echo -e "${RED}Failed${NC}"
                 fi
             fi
         else
-            echo "未添加模块"
+            echo "Module not added"
         fi
     else
         SELECTED_MODULES+=("$selected_module")
-        echo -e "${GREEN}已添加模块 $selected_module${NC}"
+        echo -e "${GREEN}Added module $selected_module${NC}"
     fi
 
-    # 询问是否立即加载
-    read -p "是否立即加载此模块? (Y/n): " load_now
+    # Ask whether to load immediately
+    read -p "Load this module now? (Y/n): " load_now
     if [[ -z "$load_now" ]] || [[ ${load_now,,} == "y" ]]; then
-        echo -n "加载 $selected_module... "
+        echo -n "Loading $selected_module... "
         if module load "$selected_module" 2>&1; then
-            echo -e "${GREEN}成功${NC}"
+            echo -e "${GREEN}OK${NC}"
         else
-            echo -e "${RED}失败${NC}"
+            echo -e "${RED}Failed${NC}"
         fi
     fi
 
-    read -p "按回车继续..."
+    read -p "Press Enter to continue..."
 }
 
-# 函数：删除模块
+# Function: remove module
 remove_selected_module() {
     if [[ ${#SELECTED_MODULES[@]} -eq 0 ]]; then
-        echo "当前没有已选模块"
-        read -p "按回车继续..."
+        echo "No modules currently selected"
+        read -p "Press Enter to continue..."
         return
     fi
 
-    echo "选择要删除的模块:"
+    echo "Select module to remove:"
     local selected_module
     selected_module=$(select_from_list "${SELECTED_MODULES[@]}")
 
@@ -220,7 +220,7 @@ remove_selected_module() {
         return
     fi
 
-    # 从数组中移除
+    # Remove from array
     local new_array=()
     for module in "${SELECTED_MODULES[@]}"; do
         if [[ "$module" != "$selected_module" ]]; then
@@ -229,121 +229,121 @@ remove_selected_module() {
     done
     SELECTED_MODULES=("${new_array[@]}")
 
-    echo -e "${GREEN}已从计划中移除模块 $selected_module${NC}"
+    echo -e "${GREEN}Removed module $selected_module from plan${NC}"
 
-    # 询问是否立即卸载
-    read -p "是否立即从环境中卸载此模块? (Y/n): " unload_now
+    # Ask whether to unload immediately
+    read -p "Unload this module from environment now? (Y/n): " unload_now
     if [[ -z "$unload_now" ]] || [[ ${unload_now,,} == "y" ]]; then
-        echo -n "卸载 $selected_module... "
+        echo -n "Unloading $selected_module... "
         if module unload "$selected_module" 2>&1; then
-            echo -e "${GREEN}成功${NC}"
+            echo -e "${GREEN}OK${NC}"
         else
-            echo -e "${RED}失败${NC}"
+            echo -e "${RED}Failed${NC}"
         fi
     fi
 
-    read -p "按回车继续..."
+    read -p "Press Enter to continue..."
 }
 
-# 函数：显示所有可用模块
+# Function: show all available modules
 show_all_modules() {
-    echo "获取所有可用模块中（可能需要几秒钟）..."
+    echo "Fetching all available modules (may take a few seconds)..."
     local all_modules=($(get_available_modules))
 
     if [[ ${#all_modules[@]} -eq 0 ]]; then
-        echo "没有可用模块"
+        echo "No modules available"
     else
-        echo "可用模块 (${#all_modules[@]} 个):"
+        echo "Available modules (${#all_modules[@]}):"
         for i in "${!all_modules[@]}"; do
             printf "  %3d) %s\n" $((i+1)) "${all_modules[$i]}"
             if [[ $(( (i+1) % 20 )) -eq 0 ]] && [[ $((i+1)) -lt ${#all_modules[@]} ]]; then
-                read -p "按回车显示更多，或按 Ctrl+C 中断..."
+                read -p "Press Enter for more, or Ctrl+C to abort..."
             fi
         done
     fi
 
-    read -p "按回车继续..."
+    read -p "Press Enter to continue..."
 }
 
-# 函数：显示菜单
+# Function: display menu
 show_menu() {
     clear
     echo "============================================================"
-    echo "                  MODULE 配置工具"
+    echo "                  MODULE Configuration Tool"
     echo "============================================================"
 
-    # 显示计划加载的模块
-    echo -e "${BLUE}计划加载的模块（选择5应用）:${NC}"
+    # Show planned modules
+    echo -e "${BLUE}Planned modules (select 5 to apply):${NC}"
     if [[ ${#SELECTED_MODULES[@]} -gt 0 ]]; then
         for i in "${!SELECTED_MODULES[@]}"; do
             echo "  $((i+1))) ${SELECTED_MODULES[$i]}"
         done
     else
-        echo "  (无)"
+        echo "  (none)"
     fi
 
     echo ""
-    echo -e "${BLUE}选项:${NC}"
-    echo "  1) 添加模块"
-    echo "  2) 删除模块"
-    echo "  3) 搜索模块"
-    echo "  4) 显示所有可用模块"
-    echo "  5) 应用选中的模块"
-    echo "  6) 退出"
+    echo -e "${BLUE}Options:${NC}"
+    echo "  1) Add module"
+    echo "  2) Delete module"
+    echo "  3) Search modules"
+    echo "  4) Show all available modules"
+    echo "  5) Apply selected modules"
+    echo "  6) Exit"
     echo ""
     echo "============================================================"
 }
 
-# 函数：应用选中的模块
+# Function: apply selected modules
 apply_modules() {
-    echo "应用选中的模块..."
+    echo "Applying selected modules..."
 
-    # 先显示当前加载的模块
-    echo "当前加载的模块:"
+    # Show current loaded modules
+    echo "Currently loaded modules:"
     module list 2>&1
 
     echo ""
-    echo "将加载以下模块:"
+    echo "Will load the following modules:"
     for module in "${SELECTED_MODULES[@]}"; do
         echo "  module load $module"
     done
 
-    read -p "确定要加载这些模块吗? (y/N): " confirm
+    read -p "Confirm loading these modules? (y/N): " confirm
     if [[ ${confirm,,} != "y" ]]; then
-        echo "已取消"
-        read -p "按回车继续..."
+        echo "Cancelled"
+        read -p "Press Enter to continue..."
         return
     fi
 
-    # 实际加载模块
+    # Actually load modules
     for module in "${SELECTED_MODULES[@]}"; do
-        echo -n "加载 $module... "
+        echo -n "Loading $module... "
         if module load "$module" 2>&1; then
-            echo -e "${GREEN}成功${NC}"
+            echo -e "${GREEN}OK${NC}"
         else
-            echo -e "${RED}失败${NC}"
+            echo -e "${RED}Failed${NC}"
         fi
     done
 
     echo ""
-    echo "模块加载完成。"
-    read -p "按回车继续..."
+    echo "Module loading complete."
+    read -p "Press Enter to continue..."
 }
 
-# 主函数
+# Main function
 main() {
-    # 初始化：从当前加载的模块开始
-    echo "正在初始化..."
-    echo "提示: 本工具维护一个模块加载计划列表。"
-    echo "      - 添加/删除模块时可以选择立即执行"
-    echo "      - 或选择选项5批量应用所有计划模块"
+    # Initialize: start with currently loaded modules
+    echo "Initializing..."
+    echo "Note: This tool maintains a module load plan list."
+    echo "      - Add/remove modules with option to execute immediately"
+    echo "      - Or select option 5 to batch apply all planned modules"
     echo ""
     SELECTED_MODULES=($(get_loaded_modules))
 
     while true; do
         show_menu
 
-        read -p "请输入选项 (1-6): " choice
+        read -p "Enter choice (1-6): " choice
 
         case $choice in
             1)
@@ -362,28 +362,28 @@ main() {
                 apply_modules
                 ;;
             6)
-                echo "退出。"
+                echo "Exiting."
                 if [[ ${#SELECTED_MODULES[@]} -gt 0 ]]; then
-                    echo "计划加载的模块（尚未实际加载）:"
+                    echo "Planned modules (not yet loaded):"
                     for module in "${SELECTED_MODULES[@]}"; do
                         echo "  module load $module"
                     done
                     echo ""
-                    echo "提示: 这些模块尚未加载到环境中。"
-                    echo "      - 如需加载，请重新运行脚本并选择选项5"
-                    echo "      - 或手动执行上述 module load 命令"
+                    echo "Note: These modules have not been loaded into the environment."
+                    echo "      - Re-run the script and select option 5 to load them"
+                    echo "      - Or manually run the module load commands above"
                 else
-                    echo "没有计划加载的模块。"
+                    echo "No planned modules."
                 fi
                 break
                 ;;
             *)
-                echo "无效选项"
-                read -p "按回车继续..."
+                echo "Invalid option"
+                read -p "Press Enter to continue..."
                 ;;
         esac
     done
 }
 
-# 运行主函数
+# Run main function
 main

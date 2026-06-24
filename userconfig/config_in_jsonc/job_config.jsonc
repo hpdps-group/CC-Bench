@@ -1,12 +1,12 @@
 {
   /*
-    作业调度配置
-    job_choice: "slurm" — 生成 .slurm 脚本，通过 sbatch 提交作业
-                "srun"  — 生成 .srun.sh 脚本，在 salloc 后的终端里直接 bash 执行
-                "local" — 生成 .sh 脚本，本地单节点直接 mpirun 执行（无需调度器）
+    Job Scheduling Configuration
+    job_choice: "slurm" — generates .slurm script, submit via sbatch
+                "srun"  — generates .srun.sh script, run with bash inside an salloc session
+                "local" — generates .sh script, run locally with mpirun (no scheduler)
 
-    slurm.job:       SLURM SBATCH 参数（仅 job_choice="slurm" 时生效）
-    slurm.resources: 硬件资源申请（仅 job_choice="slurm" 时生效）
+    slurm.job:       SLURM SBATCH parameters (only applies when job_choice="slurm")
+    slurm.resources: Hardware resource requests (only applies when job_choice="slurm")
   */
   "job_choice": "srun",
 
@@ -21,7 +21,7 @@
     },
     "resources": {
       "nodes": 2,
-      "tasks_per_node": 4
+      "tasks_per_node": 8
     }
   }
 }

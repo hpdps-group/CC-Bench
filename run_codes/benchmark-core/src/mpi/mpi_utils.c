@@ -64,9 +64,10 @@ mpi_test_context_t mpi_test_init(int argc, char **argv, const char *test_name) {
             }
             printf("\n");
         } else {
-            printf("Message sizes: %zu to %zu (x%d)\n",
+            printf("Message sizes: %zu to %zu (%s%d)\n",
                    ctx.config.min_message_size,
                    ctx.config.max_message_size,
+                   ctx.config.message_size_incr_mode ? "+" : "x",
                    ctx.config.message_size_incr);
         }
         printf("Iterations: %d (warmup: %d)\n",
@@ -167,9 +168,9 @@ void mpi_report_results(const mpi_test_context_t *ctx, size_t msg_size, int coun
         if (ctx->config.validate) {
             printf("  Correct: %s\n", total_errors == 0 ? "YES" : "NO");
             if (metrics && ctx->config.compute_metrics && metrics->num_elements > 0) {
-                for (int i = 0; i < g_metric_registry_count && i < MAX_METRICS; i++) {
+                for (int i = 0; i < validation_registry_count() && i < MAX_METRICS; i++) {
                     if (ctx->config.metrics_mask & (1u << i)) {
-                        printf("  %s: %.6e\n", g_metric_registry[i].name,
+                        printf("  %s: %.6e\n", validation_metric_name(i),
                                metrics->values[i]);
                     }
                 }

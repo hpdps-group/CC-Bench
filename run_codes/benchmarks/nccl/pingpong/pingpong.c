@@ -66,6 +66,10 @@ int main(int argc, char **argv)
     ncclDataType_t dtype = data_type_to_nccl(config.data_type);
     size_t esz = nccl_dtype_size(dtype);
 
+    /* Default CSV path */
+    if (config.save_csv && config.csv_path[0] == '\0')
+        snprintf(config.csv_path, sizeof(config.csv_path), "results/pingpong.csv");
+
     size_t max_sz = config.max_message_size;
     void *d_buf = NULL;
     cudaMalloc(&d_buf, max_sz);
@@ -86,6 +90,12 @@ int main(int argc, char **argv)
                "Size(B)", "Partner", "Lat(us)", "BW(GB/s)",
                "send0", "recv0", "recvP", "sendP");
     }
+
+    /* ── CSV header ───────────────────────────────────────────── */
+    if (rank == 0 && config.save_csv)
+        nccl_csv_write(config.csv_path,
+                       "msg_size,partner,latency_us,bandwidth_gbps,"
+                       "send0_us,recv0_us,recvP_us,sendP_us", NULL);
 
     /* ── Main loop ────────────────────────────────────────────────── */
     size_iter_t sz_it;
@@ -254,6 +264,12 @@ int main(int argc, char **argv)
                            "send0=%.2f recv0=%.2f recvP=%.2f sendP=%.2f us\n",
                            sz, partner, lat_us, bw / 1e9,
                            avg_send0, avg_recv0, avg_recvP, avg_sendP);
+
+                    if (config.save_csv)
+                        nccl_csv_write(config.csv_path, NULL,
+                                       "%zu,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f",
+                                       sz, partner, lat_us, bw / 1e9,
+                                       avg_send0, avg_recv0, avg_recvP, avg_sendP);
                 }
             }
         }

@@ -86,13 +86,13 @@ static inline size_t packedSize(int numElems, int numBits) {
 }
 
 /*===========================================================================*
- *  拉入 coccl wrapper 模板 — 提供 4 个入口函数                              *
- *  下面需要实现:  maxCompSize / compressOne / decompressOne                  *
+ *  Pull in coccl wrapper template — provides 4 entry-point functions         *
+ *  Implement these below:  maxCompSize / compressOne / decompressOne         *
  *===========================================================================*/
 #include "../coccl_wrapper_template.cu"
 
 /*===========================================================================*
- *  Callback 1 — 最大压缩后字节数                                             *
+ *  Callback 1 — max compressed size                                       *
  *===========================================================================*/
 static size_t maxCompSize(size_t numElems, ncclDataType_t type) {
   (void)type;
@@ -105,7 +105,7 @@ static size_t maxCompSize(size_t numElems, ncclDataType_t type) {
 }
 
 /*===========================================================================*
- *  Callback 2 — 压缩一个 chunk                                              *
+ *  Callback 2 — compress one chunk                                        *
  *===========================================================================*/
 static ncclResult_t compressOne(const void* src, void* dst,
     size_t numElems, ncclDataType_t type, cudaStream_t stream) {
@@ -144,7 +144,7 @@ static ncclResult_t compressOne(const void* src, void* dst,
 }
 
 /*===========================================================================*
- *  Callback 3 — 解压缩一个 chunk                                            *
+ *  Callback 3 — decompress one chunk                                      *
  *===========================================================================*/
 static ncclResult_t decompressOne(const void* src, void* dst,
     size_t numElems, ncclDataType_t type, cudaStream_t stream) {

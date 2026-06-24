@@ -11,21 +11,13 @@
  *                          (default 10000, increase for longer-running kernels)
  *
  * Requires:
- *   CUDA toolkit headers (cuda.h) and libcuda.so at build time.
+ *   CUDA runtime headers + libcudart / libcuda at build time.
+ *   Compiled together with daemon_stress_gpu_nvidia_kernel.cu (nvcc).
  *   Only the NVIDIA driver is required at runtime.
- *
- * Compile (manual — register_daemons.sh currently passes -lm -lpthread only):
- *   gcc -O2 -Wall -I./run_codes/daemons/include \
- *       run_codes/daemons/src/daemon_helper.c \
- *       userconfig/daemon_code_examples/daemon_stress_gpu_nvidia.c \
- *       -o bin/daemons/daemon_stress_gpu_nvidia \
- *       -lm -lpthread -lcuda
- *
- * Or add -lcuda to the CC line in register_daemons.sh for this file.
  */
 
 #include "daemon_helper.h"
-#include <cuda.h>
+#include <cuda_runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,101 +25,34 @@
 #include <pthread.h>
 #include <signal.h>
 
+/* External kernel launcher — compiled from run_codes/daemons/src/daemon_gpu_burn_kernel.cu */
+#include "daemon_gpu_burn_kernel.h"
+
 /* ── Tunables ──────────────────────────────────────────────────── */
 #define CYCLE_SEC   0.100   /* 100 ms duty-cycle granularity       */
 #define BLOCKS      256     /* thread-blocks per kernel launch     */
 #define THREADS     256     /* threads per block                   */
-
-/* ── PTX for the compute kernel ────────────────────────────────── *
- *
- * Equivalent CUDA source:
- *   __global__ void gpu_burn(double *out, int iterations) {
- *       int tid = threadIdx.x + blockIdx.x * blockDim.x;
- *       double x = 1.0;
- *       for (int i = 0; i < iterations; i++) {
- *           x = x * 1.0000001 + 0.0000001;
- *           x = x / 1.0000001 - 0.0000001;
- *       }
- *       out[tid] = x;   // prevent dead-code elimination
- *   }
- * ──────────────────────────────────────────────────────────────── */
-static const char gpu_burn_ptx[] =
-    ".version 7.0\n"
-    ".target sm_60\n"
-    ".address_size 64\n"
-    "\n"
-    ".visible .entry gpu_burn(\n"
-    "  .param .u64 out,\n"
-    "  .param .u32 iterations\n"
-    ")\n"
-    "{\n"
-    "  .reg .u32  tid, bid, ntid, iters, i;\n"
-    "  .reg .u64  ptr, off;\n"
-    "  .reg .f64  x;\n"
-    "  .reg .pred p;\n"
-    "\n"
-    "  mov.u32        tid,  %tid.x;\n"
-    "  mov.u32        bid,  %ctaid.x;\n"
-    "  mov.u32        ntid, %ntid.x;\n"
-    "  mad.lo.u32     tid,  bid, ntid, tid;\n"
-    "\n"
-    "  ld.param.u32   iters, [iterations];\n"
-    "  ld.param.u64   ptr,   [out];\n"
-    "\n"
-    "  mov.f64        x, 1.0;\n"
-    "  mov.u32        i, 0;\n"
-    "\n"
-    "loop:\n"
-    "  mul.f64        x, x, 1.0000001;\n"
-    "  add.f64        x, x, 0.0000001;\n"
-    "  div.f64        x, x, 1.0000001;\n"
-    "  sub.f64        x, x, 0.0000001;\n"
-    "  add.u32        i, i, 1;\n"
-    "  setp.lt.u32    p, i, iters;\n"
-    "  @p bra         loop;\n"
-    "\n"
-    "  mul.wide.u32   off, tid, 8;\n"
-    "  add.u64        ptr, ptr, off;\n"
-    "  cvta.to.global.u64  ptr, ptr;\n"
-    "  st.global.f64  [ptr], x;\n"
-    "  ret;\n"
-    "}\n";
 
 /* ── Shared stop flag ──────────────────────────────────────────── */
 static volatile sig_atomic_t g_worker_stop = 0;
 
 /* ── Per-GPU worker context ────────────────────────────────────── */
 typedef struct {
-    int         gpu_idx;
-    CUcontext   ctx;
-    CUmodule    mod;
-    CUfunction  func;
-    CUstream    stream;
-    CUdeviceptr d_out;
-    double      work_sec;
-    double      sleep_sec;
-    size_t      d_out_size;
+    int          gpu_idx;
+    cudaStream_t stream;
+    double      *d_out;
+    double       work_sec;
+    double       sleep_sec;
+    size_t       d_out_size;
 } gpu_worker_t;
 
 /* ── Launch a burst of kernels to fill work_sec ────────────────── */
 static void burn_gpu(gpu_worker_t *w, int iterations)
 {
-    void *args[2];
-    args[0] = &w->d_out;
-    args[1] = &iterations;
-
     double t0 = daemon_get_time();
     while (daemon_get_time() - t0 < w->work_sec) {
-        CUresult res = cuLaunchKernel(
-            w->func,
-            BLOCKS, 1, 1,          /* grid dim  */
-            THREADS, 1, 1,         /* block dim */
-            0,                     /* shared mem */
-            w->stream,             /* stream    */
-            args, NULL);           /* kernel args */
-        if (res != CUDA_SUCCESS)
-            break;
-        cuStreamSynchronize(w->stream);
+        launch_gpu_burn(w->d_out, iterations, w->stream, BLOCKS, THREADS);
+        cudaStreamSynchronize(w->stream);
 
         /* If signalled during a burn burst, exit early */
         if (g_worker_stop || daemon_should_stop())
@@ -149,37 +74,27 @@ static void *worker_routine(void *arg)
     gpu_worker_t *w = (gpu_worker_t *)arg;
 
     /* Attach to the GPU */
-    CUresult res;
-    res = cuCtxSetCurrent(w->ctx);
-    if (res != CUDA_SUCCESS) {
-        fprintf(stderr, "[stress_gpu %d] cuCtxSetCurrent failed\n", w->gpu_idx);
-        return NULL;
-    }
-
-    /* Load module and get kernel function */
-    res = cuModuleLoadData(&w->mod, gpu_burn_ptx);
-    if (res != CUDA_SUCCESS) {
-        fprintf(stderr, "[stress_gpu %d] cuModuleLoadData failed\n", w->gpu_idx);
-        return NULL;
-    }
-    res = cuModuleGetFunction(&w->func, w->mod, "gpu_burn");
-    if (res != CUDA_SUCCESS) {
-        fprintf(stderr, "[stress_gpu %d] cuModuleGetFunction failed\n", w->gpu_idx);
+    cudaError_t err = cudaSetDevice(w->gpu_idx);
+    if (err != cudaSuccess) {
+        fprintf(stderr, "[stress_gpu %d] cudaSetDevice failed: %s\n",
+                w->gpu_idx, cudaGetErrorString(err));
         return NULL;
     }
 
     /* Create stream */
-    res = cuStreamCreate(&w->stream, CU_STREAM_NON_BLOCKING);
-    if (res != CUDA_SUCCESS) {
-        fprintf(stderr, "[stress_gpu %d] cuStreamCreate failed\n", w->gpu_idx);
+    err = cudaStreamCreate(&w->stream);
+    if (err != cudaSuccess) {
+        fprintf(stderr, "[stress_gpu %d] cudaStreamCreate failed: %s\n",
+                w->gpu_idx, cudaGetErrorString(err));
         return NULL;
     }
 
     /* Allocate device output buffer (one double per thread) */
     w->d_out_size = (size_t)BLOCKS * THREADS * sizeof(double);
-    res = cuMemAlloc(&w->d_out, w->d_out_size);
-    if (res != CUDA_SUCCESS) {
-        fprintf(stderr, "[stress_gpu %d] cuMemAlloc failed\n", w->gpu_idx);
+    err = cudaMalloc(&w->d_out, w->d_out_size);
+    if (err != cudaSuccess) {
+        fprintf(stderr, "[stress_gpu %d] cudaMalloc failed: %s\n",
+                w->gpu_idx, cudaGetErrorString(err));
         return NULL;
     }
 
@@ -196,13 +111,10 @@ static void *worker_routine(void *arg)
     }
 
     /* Cleanup */
-    cuStreamSynchronize(w->stream);
-    cuMemFree(w->d_out);
-    cuStreamDestroy(w->stream);
-    cuModuleUnload(w->mod);
-    w->d_out   = 0;
-    w->mod     = NULL;
-    w->func    = NULL;
+    cudaStreamSynchronize(w->stream);
+    cudaFree(w->d_out);
+    cudaStreamDestroy(w->stream);
+    w->d_out   = NULL;
     w->stream  = NULL;
     return NULL;
 }
@@ -221,17 +133,10 @@ int main(int argc, char **argv)
     double work_sec  = CYCLE_SEC * gpu_pct / 100.0;
     double sleep_sec = CYCLE_SEC - work_sec;
 
-    /* Initialise CUDA driver API */
-    CUresult res = cuInit(0);
-    if (res != CUDA_SUCCESS) {
-        fprintf(stderr, "[daemon_stress_gpu_nvidia] cuInit failed "
-                "(NVIDIA driver loaded?)\n");
-        return 1;
-    }
-
+    /* Initialise CUDA runtime */
     int ngpu = 0;
-    res = cuDeviceGetCount(&ngpu);
-    if (res != CUDA_SUCCESS || ngpu < 1) {
+    cudaError_t err = cudaGetDeviceCount(&ngpu);
+    if (err != cudaSuccess || ngpu < 1) {
         fprintf(stderr, "[daemon_stress_gpu_nvidia] no CUDA-capable GPU found\n");
         return 1;
     }
@@ -257,11 +162,6 @@ int main(int argc, char **argv)
         workers[i].gpu_idx   = i;
         workers[i].work_sec  = work_sec;
         workers[i].sleep_sec = sleep_sec;
-
-        CUdevice dev;
-        cuDeviceGet(&dev, i);
-        cuCtxCreate(&workers[i].ctx, CU_CTX_SCHED_BLOCKING_SYNC, dev);
-
         pthread_create(&threads[i], NULL, worker_routine, &workers[i]);
     }
 
@@ -282,8 +182,6 @@ int main(int argc, char **argv)
     /* Join all workers */
     for (int i = 0; i < ngpu; i++) {
         pthread_join(threads[i], NULL);
-        cuCtxDestroy(workers[i].ctx);
-        workers[i].ctx = NULL;
     }
 
     free(workers);

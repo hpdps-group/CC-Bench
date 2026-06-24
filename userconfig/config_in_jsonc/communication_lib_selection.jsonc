@@ -1,39 +1,45 @@
 {
   /*
-    通信库接入选择（Communication Library Selection）
+    Communication Library Selection
 
     mode 0 — bare
-      无压缩 baseline，直接测裸通信性能。
-      不需要任何字段。
+      Baseline without any wrapper, test raw communication performance.
+      No fields required.
 
     mode 1 — direct-lib
-      用户提供预编译 .so。
-      需要: library_paths
+      User provides precompiled .so library.
+      Requires: library_paths
 
     mode 2 — lib+wrapper
-      用户提供预编译 .so + wrapper 源码一起编译。
-      需要: library_paths, source_{files,dirs}, include_{files,dirs}
+      User provides precompiled .so + wrapper source code compiled together.
+      Requires: library_paths, source_{files,dirs}, include_{files,dirs}
 
     mode 3 — pure code wrapper
-      用户提供源码 + wrapper 源码，全部编译为 .so。
-      需要: source_{files,dirs}, include_{files,dirs}
+      User provides source code + wrapper source, all compiled into .so.
+      Requires: source_{files,dirs}, include_{files,dirs}
 
-    === 示例 ===
-    wrapper_code_examples/communication/zccl/ 下:
-   用户自定义实现请放在 your_wrapper_code/communication/ 下。
+    === Examples ===
+    See wrapper_code_examples/communication/zccl/ for a ZCCL example.
+    Custom implementations should be placed in your_wrapper_code/communication/.
   */
-  "mode": 1,
+  "mode": 2,
 
-  "library_paths": ["plugin_projects/ccl/coccl/build/lib/libnccl.so"],
+  "library_paths": ["plugin_projects/ccl/uccl/p2p/libuccl_p2p.so"],
   "source_files": [],
 
-  "source_dirs": [],
+  "source_dirs": ["userconfig/wrapper_code_examples/communication/nccl_via_uccl"],
 
   "include_files": [],
 
-  "include_dirs": [],
+  "include_dirs": [
+    "plugin_projects/ccl/uccl/p2p",
+    "plugin_projects/ccl/uccl/p2p/include",
+    "plugin_projects/ccl/uccl/include",
+    "plugin_projects/ccl/uccl/thirdparty/dietgpu",
+    "/tmp/efa_stub/include"
+  ],
 
   "libraries": [],
 
-  "output_name": "hahaha_comm_wrapper.so"
+  "output_name": "libnccl_via_uccl.so"
 }
