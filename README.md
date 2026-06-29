@@ -1,4 +1,4 @@
-# CCBench — High-Performance Communication & Compression Benchmark Framework
+# CCBench — High-Performance Communication Compression Benchmark Framework
 
 CCBench is a modular benchmark framework for HPC scenarios, supporting **MPI / NCCL / RCCL** communication backends. It leverages `LD_PRELOAD`-based instrumentation to decouple communication compression, performance profiling, and background monitoring.
 
