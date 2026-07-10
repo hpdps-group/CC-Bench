@@ -55,6 +55,16 @@ static void get_rank_size(int *rank, int *size)
     *size = s ? atoi(s) : 1;
 }
 
+/* ── Local rank (per-node) for device mapping ────────────────── */
+static int get_local_rank(void)
+{
+    const char *r;
+    r = getenv("OMPI_COMM_WORLD_LOCAL_RANK");
+    if (!r) r = getenv("SLURM_LOCALID");
+    if (!r) r = getenv("PMI_LOCAL_RANK");
+    return r ? atoi(r) : 0;
+}
+
 /* ── NCCL communicator bootstrap ──────────────────────────────── */
 static ncclComm_t init_nccl_comm(int rank, int size)
 {
@@ -124,7 +134,9 @@ nccl_test_context_t nccl_test_init(int argc, char **argv,
     printf("[nccl] Initializing CUDA...\n");
     int ndev = 0;
     cudaGetDeviceCount(&ndev);
-    int dev = ctx.rank % (ndev > 0 ? ndev : 1);
+    int local_rank = get_local_rank();
+    int dev = local_rank % (ndev > 0 ? ndev : 1);
+    printf("[nccl]   rank=%d local_rank=%d ndev=%d dev=%d\n", ctx.rank, local_rank, ndev, dev);
     cudaSetDevice(dev);
     cudaStreamCreate(&ctx.stream);
 
@@ -457,21 +469,21 @@ void nccl_report_results(const nccl_test_context_t *ctx,
         }
     }
 
-    /* ── Compute aggregated stats ────────────────────────────── */
-    double min_us = avg_us, max_us = avg_us, sum_us = avg_us;
-    double bw_min = bw, bw_max = bw, bw_sum = bw;
-    int total_errors = local_errors;
+    /* ── Compute aggregated stats (fixed: no longer double-counts rank 0) ── */
+    double min_us = all_data[0 * 3], max_us = all_data[0 * 3], sum_us = 0;
+    double bw_min = all_data[0 * 3 + 2], bw_max = all_data[0 * 3 + 2], bw_sum = 0;
+    int total_errors = 0;
     for (int r = 0; r < nranks; r++) {
         double v = all_data[(size_t)r * 3];
         int    e = (int)all_data[(size_t)r * 3 + 1];
         double b = all_data[(size_t)r * 3 + 2];
+        sum_us += v;
+        bw_sum += b;
+        total_errors += e;
         if (v < min_us) min_us = v;
         if (v > max_us) max_us = v;
-        sum_us += v;
-        total_errors += e;
         if (b < bw_min) bw_min = b;
         if (b > bw_max) bw_max = b;
-        bw_sum += b;
     }
     double avg_global = sum_us / nranks;
     double bw_avg = bw_sum / nranks;

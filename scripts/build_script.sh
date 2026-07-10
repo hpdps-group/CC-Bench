@@ -74,6 +74,11 @@ def emit(k, v):
     print(k + "='" + escaped + "'")
 
 emit('JOB_CHOICE', cfg['job']['job_choice'])
+cross_nodes = cfg['job'].get('cross_alloc_nodes', [])
+if isinstance(cross_nodes, list):
+    emit('CROSS_ALLOC_NODES', ','.join(str(x) for x in cross_nodes) if cross_nodes else '')
+else:
+    emit('CROSS_ALLOC_NODES', '')
 emit('PHASE1_WARMUP', cfg['basic']['iterations']['performance']['warmup'])
 emit('PHASE1_MEASURE', cfg['basic']['iterations']['performance']['measurement'])
 emit('PHASE2_WARMUP', cfg['basic']['iterations']['perf_round']['warmup'])
@@ -182,6 +187,8 @@ for key in sorted(env.keys()):
         print('export ' + key + '="' + escaped + '"')
 print("'''")
 
+all_env_names = sorted(env.keys()) + ["LD_PRELOAD"]
+print("ENV_VAR_NAMES=\"" + " ".join(all_env_names) + "\"")
 PYEOF
 )"
 
@@ -231,29 +238,50 @@ esac
 NPROCS=$(( SLURM_NODES * SLURM_TASKS_PER_NODE ))
 
 case "$JOB_CHOICE" in
-    slurm) OUTPUT_SCRIPT="$OUTPUT_DIR/run_benchmark.slurm"  ;;
-    srun)  OUTPUT_SCRIPT="$OUTPUT_DIR/run_benchmark.srun.sh" ;;
-    local) OUTPUT_SCRIPT="$OUTPUT_DIR/run_benchmark.sh"      ;;
+    slurm) OUTPUT_SCRIPT="$OUTPUT_DIR/run_benchmark.slurm"      ;;
+    srun)  OUTPUT_SCRIPT="$OUTPUT_DIR/run_benchmark.srun.sh"    ;;
+    mpirun) OUTPUT_SCRIPT="$OUTPUT_DIR/run_benchmark.mpirun.sh" ;;
+    local) OUTPUT_SCRIPT="$OUTPUT_DIR/run_benchmark.sh"          ;;
 esac
 
-# ── Launcher detection ──────────────────────────────────
-# MPI arch always uses mpirun (needs the MPI runtime).
-# Non-MPI arch: prefer srun, fallback to mpirun, or error.
+# ── Launcher selection ──────────────────────────────────
+# JOB_CHOICE determines the launcher; verify it exists at build time.
+# MPI arch always uses mpirun regardless of JOB_CHOICE.
 if [ "$ARCH" = "mpi" ]; then
-    LAUNCH_CMD="mpirun -np $NPROCS"
-    if [ "$JOB_CHOICE" = "srun" ]; then
-        LAUNCH_CMD="mpirun -np $NPROCS --hostfile \$LSF_HOSTFILE --map-by node"
-    fi
-elif command -v srun &>/dev/null; then
-    LAUNCH_CMD="stdbuf -oL srun --nodes=$SLURM_NODES --ntasks=$NPROCS --ntasks-per-node=$SLURM_TASKS_PER_NODE"
-elif command -v mpirun &>/dev/null; then
+    command -v mpirun >/dev/null 2>&1 || { echo "Error: ARCH=mpi requires mpirun (not found)" >&2; exit 1; }
     LAUNCH_CMD="mpirun -np $NPROCS"
     if [ "$JOB_CHOICE" = "srun" ]; then
         LAUNCH_CMD="mpirun -np $NPROCS --hostfile \$LSF_HOSTFILE --map-by node"
     fi
 else
-    echo "Error: no launcher found for ARCH=$ARCH (need srun or mpirun)" >&2
-    exit 1
+    case "$JOB_CHOICE" in
+        slurm|srun)
+            command -v srun >/dev/null 2>&1 || { echo "Error: JOB_CHOICE=$JOB_CHOICE but srun not found" >&2; exit 1; }
+            LAUNCH_CMD="stdbuf -oL srun --nodes=$SLURM_NODES --ntasks=$NPROCS --ntasks-per-node=$SLURM_TASKS_PER_NODE"
+            ;;
+        mpirun)
+            command -v mpirun >/dev/null 2>&1 || { echo "Error: JOB_CHOICE=mpirun but mpirun not found" >&2; exit 1; }
+            if [ -n "${CROSS_ALLOC_NODES:-}" ]; then
+                LAUNCH_CMD="mpirun --hostfile \$CROSS_HOSTFILE -np $NPROCS --map-by node --bind-to none -x LD_LIBRARY_PATH -x LD_PRELOAD"
+            else
+                LAUNCH_CMD="mpirun -np $NPROCS --bind-to none"
+            fi
+            ;;
+        local)
+            LAUNCH_CMD=""
+            ;;
+        *)
+            echo "Error: unknown JOB_CHOICE=$JOB_CHOICE" >&2
+            exit 1
+            ;;
+    esac
+fi
+
+# For mpirun launchers: append -x for every config env var (forcing remote export)
+if [[ "$LAUNCH_CMD" = *mpirun* ]] && [ -n "${ENV_VAR_NAMES:-}" ]; then
+  for _v in $ENV_VAR_NAMES; do
+    LAUNCH_CMD="$LAUNCH_CMD -x $_v"
+  done
 fi
 
 echo "[build_script] generating: $OUTPUT_SCRIPT"
@@ -285,6 +313,9 @@ emit_daemon_start_block() {
     if [ "$JOB_CHOICE" = "slurm" ] || [ "$JOB_CHOICE" = "srun" ]; then
         write_line "      srun --nodes=\$NNODES --ntasks=\$NNODES --ntasks-per-node=1 --overlap \"\$BENCH_DIR/bin/daemons/daemon_\$d\" $DAEMON_INTERVAL &"
         write_line "      echo \"[bench]   daemon_\$d started via srun\""
+    elif [ "$JOB_CHOICE" = "mpirun" ] && [ -n "${CROSS_ALLOC_NODES:-}" ]; then
+        write_line "      mpirun --hostfile \$CROSS_HOSTFILE -np \$NNODES --map-by node --bind-to none -x LD_LIBRARY_PATH -x LD_PRELOAD -x STRESS_CPU_PERCENT -x STRESS_GPU_PERCENT \"\$BENCH_DIR/bin/daemons/daemon_\$d\" $DAEMON_INTERVAL &"
+        write_line "      echo \"[bench]   daemon_\$d started via mpirun across \$NNODES nodes\""
     else
         write_line "      \"\$BENCH_DIR/bin/daemons/daemon_\$d\" $DAEMON_INTERVAL &"
         write_line "      echo \"[bench]   daemon_\$d started\""
@@ -390,6 +421,8 @@ write_line ""
 # -- Config variables -------------------------------------------
 
 write_line "# -- Config ----------------------------------------------------"
+write_line "JOB_CHOICE=\"$JOB_CHOICE\""
+write_line "CROSS_ALLOC_NODES=\"$CROSS_ALLOC_NODES\""
 write_line "ARCH=\"$ARCH\""
 write_line "BENCHMARK_TYPE=\"$BENCHMARK_TYPE\""
 write_line "TEST_NAME=\"$TEST_NAME\""
@@ -540,6 +573,26 @@ write_line 'fi'
 write_line 'export LD_PRELOAD'
 write_line 'echo "[bench] Base LD_PRELOAD (no perf): ${LD_PRELOAD:-"(none)"}"'
 write_line "echo \"\""
+
+# ── Cross-allocation hostfile (mpirun + cross_alloc_nodes) ──
+write_line '# ── Cross-allocation hostfile ──'
+write_line 'if [ -n "${CROSS_ALLOC_NODES:-}" ]; then'
+write_line '  echo "[bench] Cross-allocation mode: generating hostfile..."'
+write_line '  CROSS_HOSTFILE=$(mktemp)'
+write_line '  trap "rm -f $CROSS_HOSTFILE" EXIT'
+write_line '  IFS="," read -ra _NODES <<< "$CROSS_ALLOC_NODES"'
+write_line '  _NODES=("${_NODES[@]:0:$NNODES}")'
+write_line '  for _node in "${_NODES[@]}"; do'
+write_line '    echo "$_node slots=$(( NPROCS / NNODES ))" >> "$CROSS_HOSTFILE"'
+write_line '  done'
+write_line '  echo "[bench]   hostfile: $CROSS_HOSTFILE ($(wc -l < "$CROSS_HOSTFILE") nodes)"'
+write_line '  echo "[bench]   cleaning SLURM env vars for cross-allocation..."'
+write_line '  unset SLURM_JOB_ID SLURM_NODELIST SLURM_NNODES SLURM_NTASKS'
+write_line '  unset SLURM_TASKS_PER_NODE SLURM_NTASKS_PER_NODE SLURM_NTASKS_PER_NODE'
+write_line '  unset SLURM_JOB_NODELIST SLURM_JOBID SLURM_JOB_NUM_NODES SLURM_NODEID SLURM_PROCID'
+write_line '  echo "[bench]   ready — mpirun will use --hostfile $CROSS_HOSTFILE"'
+write_line 'fi'
+write_line ""
 
 # ============================================================
 # Step 4 -- Environment variables (applies to both phases)
