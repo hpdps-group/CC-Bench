@@ -7,6 +7,23 @@
       "nccl_allreduce"  — NCCL AllReduce (NVIDIA GPU only)
       "mpi_sendrecv"    — MPI point-to-point (send/recv)
       "mpi_bcast"       — MPI Broadcast
+      "app_trace"       — Launch an external application and trace its MPI communication
+                          via PMPI interception. The full launch command (including any
+                          mpirun/torchrun/srun wrapper) is specified in "app_command".
+                          Node detection for daemon deployment: SLURM_JOB_NODELIST is
+                          used automatically when available; otherwise cross_alloc_nodes
+                          in job_config.jsonc is required. If neither is available,
+                          daemon is skipped (PMPI trace still works).
+      "app_gendata"     — Launch an external application and dump communication buffers
+                          for dataset construction. Same daemon/deployment behavior as
+                          app_trace, but additionally dumps raw buffer contents for
+                          later use with DS_TYPE="folder".
+
+                          WARNING: You are responsible for providing a correct
+                          app_command. CCBench will exec it verbatim without validation.
+                          In non-SLURM environments, you MUST configure
+                          cross_alloc_nodes / job_config.jsonc correctly for daemon
+                          deployment.
 
     communication_arch: communication architecture
       "mpi"   — MPI-based communication
@@ -18,6 +35,14 @@
             "file"    — load from file
       pattern_type: "plain" / "rank_linear" / "rank_product" / "sequential"
 
+    app_command: string (only used when benchmark_type is "app_trace" or "app_gendata")
+      The exact command line to launch the target application. CCBench will set up
+      LD_PRELOAD (PMPI trace library + perf wrappers) and environment variables, then
+      exec this command verbatim. Examples:
+        "mpirun -np 4 --host node151:2,node158:2 python train.py --distributed=mpi"
+        "torchrun --nnodes=2 --nproc_per_node=4 python train.py"
+        "bash run_experiment.sh"
+
     message_sizes: message size specification
       mode: "range" — define range via min/max/increment (default)
             "list"  — use explicit list:[...]
@@ -28,11 +53,55 @@
       When mode="list":
         list — explicitly list all message sizes to test
   */
-  "benchmark_type": "nccl_allreduce",
-  "communication_arch": "nccl",
+  "benchmark_type": "app_gendata",
+  "communication_arch": "mpi",
+
+  "app_command": "export LD_LIBRARY_PATH=\"/public/share/acnnprvuzd/COCCL_MPI/pytorch-2.13/env-x86_64/lib/python3.12/site-packages/torch/lib:/public/share/acnnprvuzd/COCCL_MPI/pytorch-2.13/env-x86_64/lib:${LD_LIBRARY_PATH:-}\" && cd /public/share/acnnprvuzd/COCCL_MPI/tools-bench/experiments/real_training_comm_20260721 && mpirun --allow-run-as-root -np 2 --bind-to none /public/share/acnnprvuzd/COCCL_MPI/pytorch-2.13/env-x86_64/bin/python3 train_gpt2.py --strategy dp --model-dir /public/share/acnnprvuzd/COCCL_MPI/GPT-2/models/gpt2 --token-cache data_cache/openwebmath_gpt2_tokens.npy --run-dir results/ccbench_run --steps 2 --warmup-steps 0 --sequence-length 128 --batch-size 1 --threads 38 --expected-world-size 2",
+
+  /*
+    gendata_capture: dataset construction configuration
+      Automatically enabled when benchmark_type is "app_gendata" and targets are set.
+
+      targets: list of capture rules. Each rule specifies:
+        operation:  "all"                  — capture every operation type
+                    "MPI_Allreduce"        — capture only this specific operation
+                    "MPI_Allgather"
+        occurrence: list of call counts at which to dump.
+                    E.g. [50, 100] means dump on the 50th and 100th call.
+
+      Targets are symmetric: all ranks must have the same targets.
+      When a rank completes all its targets, it writes a done signal to
+      daemon_signals/gendata_done_{rank} and waits (with 300s timeout)
+      for peers. If all peers finish within timeout, the app exits early;
+      otherwise it continues to natural termination.
+
+      The bin_path (output.bin_path below) is reused as the output directory.
+      Dumped files are organized as:
+        {bin_path}/{operation}_{occurrence}/rank_{rank}.bin
+      which is directly compatible with DS_TYPE="folder".
+  */
+  "gendata_capture": {
+    "targets": [
+      {"operation": "all", "occurrence": [3, 16]}
+    ]
+  },
+
   "debug": {
     "gdb_enabled": false,
     "gdb_path": "gdb"
+  },
+
+  "snapshot": {
+    /*
+      Snapshot level controls what environment/result data is saved per run:
+        off     — no snapshot at all
+        shell   — only backup config_in_jsonc/ (lightest)
+        light   — shell + effective_config.json + metadata (build+runtime)
+        summary — light + runtime environment variable dump
+        full    — summary + copy results/ and perf_files/ into snapshot
+    */
+    "level": "off",
+    "save_dir": "env_saves"
   },
 
   "data_source": {
@@ -40,6 +109,11 @@
     "file_path": "dataset/weight/weight_4gb.f32",
     "pattern_type": "rank_linear",
     "file_format": "binary",
+    // Optional: preferred file suffix (e.g. ".f32", ".bin").
+    // When type="folder", each rank reads dataset/weight/rank_<id><file_suffix>.
+    // If unspecified, defaults to ".bin" for binary format, ".txt" for text format.
+    // When type="file" and the exact path is not found, a fallback with this suffix is attempted.
+    "file_suffix": "",
     "offset_config": {
       "base_offset": 0,
       "per_rank_offset": false,
@@ -70,22 +144,14 @@
   },
 
   "message_sizes": {
-    "mode": "range",
-    "min": 268435456,
-    "max": 1342177280,
-    "increment": 268435456,
+    "mode": "list",
+    "min": 67108864,
+    "max": 67108864,
+    "increment": 67108864,
     "increment_type": "add",
     "list": [
-      8192,      //8 KB
-      65536,     //64KB
-      524288,    //512KB
-      1048576,   //1MB
-      8388608,   //8MB
-      33554432,  //32MB
-      67108864,  //64MB
-      134217728, //128MB
-      268435456, //256MB
-      536870912  //512MB
+      8388608,   //8MB — warmup for JIT
+      40894464   //39MB
     ]
   }
 }

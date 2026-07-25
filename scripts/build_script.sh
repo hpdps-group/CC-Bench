@@ -104,10 +104,29 @@ emit('SLURM_EXCLUSIVE', res.get('exclusive', False))
 
 emit('ARCH', cfg['basic']['communication_arch'])
 emit('BENCHMARK_TYPE', cfg['basic']['benchmark_type'])
+emit('APP_COMMAND', cfg['basic'].get('app_command', ''))
+
+# Gendata capture config -- auto-enabled when benchmark_type=app_gendata and targets are set
+gc = cfg['basic'].get('gendata_capture', {})
+targets = gc.get('targets', [])
+if targets:
+    parts = []
+    for t in targets:
+        op = t.get('operation', 'all')
+        occs = t.get('occurrence', [])
+        if isinstance(occs, list):
+            occ_str = ','.join(str(x) for x in occs)
+        else:
+            occ_str = str(occs)
+        parts.append('{}:{}'.format(op, occ_str))
+    emit('GENDATA_TARGETS', ';'.join(parts))
+else:
+    emit('GENDATA_TARGETS', '')
 emit('DS_TYPE', cfg['basic']['data_source']['type'])
 emit('DS_FILE', cfg['basic']['data_source']['file_path'])
 emit('DS_PATTERN', cfg['basic']['data_source']['pattern_type'])
 emit('DS_FORMAT', cfg['basic']['data_source']['file_format'])
+emit('DS_SUFFIX', cfg['basic']['data_source'].get('file_suffix', ''))
 
 oc = cfg['basic']['data_source'].get('offset_config', {})
 emit('DS_BASE_OFFSET', oc.get('base_offset', 0))
@@ -187,7 +206,7 @@ for key in sorted(env.keys()):
         print('export ' + key + '="' + escaped + '"')
 print("'''")
 
-all_env_names = sorted(env.keys()) + ["LD_PRELOAD"]
+all_env_names = sorted(env.keys()) + ["LD_PRELOAD", "LD_LIBRARY_PATH", "PATH"]
 print("ENV_VAR_NAMES=\"" + " ".join(all_env_names) + "\"")
 PYEOF
 )"
@@ -393,7 +412,7 @@ write_line ""
 write_line '# Clean up previous perf data'
 write_line 'echo "[bench] Cleaning perf_files/ ..."'
 write_line 'rm -rf "${BENCH_DIR}/perf_files" && mkdir -p "${BENCH_DIR}/perf_files"'
-write_line ""
+write_line 'export PERF_OUTPUT_DIR="${BENCH_DIR}/perf_files"'
 write_line '# NCCL unique-id file'
 write_line 'mkdir -p "${BENCH_DIR}/nccl_id_file"'
 write_line 'rm -f "${BENCH_DIR}/nccl_id_file/nccl_bench_id"'
@@ -415,6 +434,7 @@ write_line '# Ensure signal file directory exists'
 write_line 'mkdir -p "${BENCH_DIR}/daemon_signals"'
 write_line 'echo "[bench]   cleaning old daemon signal files..."'
 write_line 'rm -f "${BENCH_DIR}"/daemon_signals/*.signal'
+write_line 'rm -f "${BENCH_DIR}"/daemon_signals/gendata_done_*'
 write_line 'echo ""'
 write_line ""
 
@@ -426,17 +446,45 @@ write_line "CROSS_ALLOC_NODES=\"$CROSS_ALLOC_NODES\""
 write_line "ARCH=\"$ARCH\""
 write_line "BENCHMARK_TYPE=\"$BENCHMARK_TYPE\""
 write_line "TEST_NAME=\"$TEST_NAME\""
+write_line "APP_COMMAND=\"$APP_COMMAND\""
 write_line "NPROCS=$NPROCS"
 write_line "NNODES=$SLURM_NODES"
+write_line ""
+write_line '# ── Dynamic node detection for daemon deployment (used in app_trace/app_gendata) ──'
+write_line '# Falls back through: SLURM_JOB_NODELIST → cross_alloc_nodes → skip with warning'
+write_line 'if [ "$BENCHMARK_TYPE" = "app_trace" ] || [ "$BENCHMARK_TYPE" = "app_gendata" ]; then'
+write_line '  if [ -n "${SLURM_JOB_NODELIST:-}" ]; then'
+write_line '    _NODE_LIST=$(scontrol show hostnames "$SLURM_JOB_NODELIST" 2>/dev/null || true)'
+write_line '    if [ -n "$_NODE_LIST" ]; then'
+write_line '      NNODES=$(echo "$_NODE_LIST" | wc -l)'
+write_line '      echo "[bench]   node detection: SLURM — $NNODES nodes"'
+write_line '    fi'
+write_line '  elif [ -n "${CROSS_ALLOC_NODES:-}" ]; then'
+write_line '    echo "[bench]   WARNING: node detection: no SLURM allocation found."'
+write_line '    echo "[bench]   WARNING: falling back to cross_alloc_nodes from config."'
+write_line '    echo "[bench]   WARNING: ensure cross_alloc_nodes in job_config.jsonc matches your"'
+write_line '    echo "[bench]   WARNING: application'\''s actual node list."'
+write_line '    IFS="," read -ra _NODES <<< "$CROSS_ALLOC_NODES"'
+write_line '    NNODES=${#_NODES[@]}'
+write_line '  else'
+write_line '    echo "[bench]   WARNING: node detection failed — no SLURM allocation and no cross_alloc_nodes."'
+write_line '    echo "[bench]   WARNING: daemon deployment requires SLURM or cross_alloc_nodes."'
+write_line '    echo "[bench]   WARNING: daemon will be skipped. PMPI trace still works."'
+write_line '    DAEMON_ENABLED=false'
+write_line '  fi'
+write_line 'fi'
+write_line ""
 write_line "COMPILER=\"$COMPILER\""
 write_line ""
 write_line "DS_TYPE=\"$DS_TYPE\""
 write_line "DS_FILE=\"$DS_FILE\""
 write_line "DS_PATTERN=\"$DS_PATTERN\""
+write_line "DS_FORMAT=\"$DS_FORMAT\""
+write_line "DS_SUFFIX=\"$DS_SUFFIX\""
 write_line "DS_BASE_OFFSET=$DS_BASE_OFFSET"
 write_line "DS_PER_RANK_OFFSET=$DS_PER_RANK_OFFSET"
 write_line "DS_CUSTOM_OFFSETS=\"$DS_CUSTOM_OFFSETS\""
-write_line 'export DS_BASE_OFFSET DS_PER_RANK_OFFSET DS_CUSTOM_OFFSETS'
+write_line 'export DS_TYPE DS_FORMAT DS_SUFFIX DS_BASE_OFFSET DS_PER_RANK_OFFSET DS_CUSTOM_OFFSETS'
 write_line "MSG_MODE=\"$MSG_MODE\""
 write_line "MSG_LIST=\"$MSG_LIST\""
 write_line "MSG_MIN=$MSG_MIN"
@@ -451,6 +499,11 @@ write_line ""
 write_line "OUTPUT_CSV=$OUTPUT_CSV"
 write_line "OUTPUT_PATH=\"$OUTPUT_PATH\""
 write_line ""
+write_line "OUTPUT_BINARY=$OUTPUT_BINARY"
+write_line "OUTPUT_BIN_PATH=\"$OUTPUT_BIN_PATH\""
+write_line ""
+write_line "GENDATA_TARGETS=\"$GENDATA_TARGETS\""
+write_line "ENV_VAR_NAMES=\"$ENV_VAR_NAMES\""
 write_line "DAEMON_ENABLED=$DAEMON_ENABLED"
 write_line "DAEMON_PHASE1_LIST=\"$DAEMON_PHASE1_LIST\""
 write_line "DAEMON_PHASE2_LIST=\"$DAEMON_PHASE2_LIST\""
@@ -563,11 +616,12 @@ write_line 'LD_PRELOAD=""'
 write_preload_entry "compression" "$COMP_MODE" "$COMP_LIBPATHS" "$COMP_OUTPUT"
 write_preload_entry "communication" "$COMM_MODE" "$COMM_LIBPATHS" "$COMM_OUTPUT"
 
-# Extensions: default ncclAllToAll etc. (lowest priority — overridable)
-write_line '# Extensions: default ncclAllToAll, ncclScatter, ncclGather...'
-write_line 'if [ -f "${BENCH_DIR}/bin/libs/libnccl_extensions.so" ]; then'
-write_line '  LD_PRELOAD="${LD_PRELOAD:+$LD_PRELOAD:}${BENCH_DIR}/bin/libs/libnccl_extensions.so"'
-write_line '  echo "[bench]   extensions: ${BENCH_DIR}/bin/libs/libnccl_extensions.so"'
+# Extensions: default ncclAllToAll etc. (NCCL/RCCL only)
+write_line 'if [ "$ARCH" = "nccl" ] || [ "$ARCH" = "rccl" ]; then'
+write_line '  if [ -f "${BENCH_DIR}/bin/libs/libnccl_extensions.so" ]; then'
+write_line '    LD_PRELOAD="${LD_PRELOAD:+$LD_PRELOAD:}${BENCH_DIR}/bin/libs/libnccl_extensions.so"'
+write_line '    echo "[bench]   extensions: ${BENCH_DIR}/bin/libs/libnccl_extensions.so"'
+write_line '  fi'
 write_line 'fi'
 
 write_line 'export LD_PRELOAD'
@@ -624,7 +678,7 @@ fi
 PHASE1_ARGS="$PHASE1_ARGS -i $PHASE1_MEASURE -w $PHASE1_WARMUP"
 PHASE1_ARGS="$PHASE1_ARGS -p $DS_PATTERN"
 [ "$VAL_ENABLED" = "true" ] && PHASE1_ARGS="$PHASE1_ARGS -v -e \"$VAL_METRICS\""
-[ "$DS_TYPE" = "file" ] && [ -n "$DS_FILE" ] && PHASE1_ARGS="$PHASE1_ARGS -f \"$DS_FILE\""
+{ [ "$DS_TYPE" = "file" ] || [ "$DS_TYPE" = "folder" ]; } && [ -n "$DS_FILE" ] && PHASE1_ARGS="$PHASE1_ARGS -f \"$DS_FILE\""
 PHASE1_ARGS="$PHASE1_ARGS -d $DATATYPE"
 [ "$OUTPUT_CSV" = "true" ] && [ -n "$OUTPUT_PATH" ] && PHASE1_ARGS="$PHASE1_ARGS -c -o \"$OUTPUT_PATH\""
 [ "$OUTPUT_BINARY" = "true" ] && [ -n "$OUTPUT_BIN_PATH" ] && PHASE1_ARGS="$PHASE1_ARGS -b -B \"$OUTPUT_BIN_PATH\""
@@ -641,8 +695,33 @@ else
   write_line 'GDB_WRAPPER=""'
 fi
 write_line ""
+write_line '# ── app_trace/app_gendata: exec user command instead of benchmark binary ──'
+write_line 'if [ "$BENCHMARK_TYPE" = "app_trace" ] || [ "$BENCHMARK_TYPE" = "app_gendata" ]; then'
+write_line '  echo "[bench] Launching app (Phase 1): $APP_COMMAND"'
+write_line '  PHASE1_START=$(date +%s.%N)'
+write_line '  # ── Auto-detect launcher and forward env vars to remote nodes ──'
+write_line '  case "$APP_COMMAND" in'
+write_line '    *mpirun*)'
+write_line '      _X_ARGS=""'
+write_line '      for _v in $ENV_VAR_NAMES; do'
+write_line '        _X_ARGS="$_X_ARGS -x $_v"'
+write_line '      done'
+write_line '      echo "[bench]   mpirun detected — auto-inserting env forwarding flags"'
+write_line '      eval "${APP_COMMAND/mpirun/mpirun $_X_ARGS}"'
+write_line '      ;;'
+write_line '    srun*)'
+write_line '      echo "[bench]   srun detected — env vars inherited by default"'
+write_line '      eval "$APP_COMMAND"'
+write_line '      ;;'
+write_line '    *)'
+write_line '      eval "$APP_COMMAND"'
+write_line '      ;;'
+write_line '  esac'
+write_line '  PHASE1_END=$(date +%s.%N)'
+write_line 'else'
 write_line "$LAUNCH_CMD \$GDB_WRAPPER \\"
 write_line "    \"\$BENCH_DIR/bin/\${ARCH}/\${TEST_NAME}/\${TEST_NAME}\" $PHASE1_ARGS"
+write_line 'fi'
 
 write_line 'BENCH_RC1=$?'
 write_line 'echo ""'
@@ -696,13 +775,55 @@ fi
 PHASE2_ARGS="$PHASE2_ARGS -i $PHASE2_MEASURE -w $PHASE2_WARMUP"
 PHASE2_ARGS="$PHASE2_ARGS -p $DS_PATTERN"
 [ "$VAL_ENABLED" = "true" ] && PHASE2_ARGS="$PHASE2_ARGS -v -e \"$VAL_METRICS\""
-[ "$DS_TYPE" = "file" ] && [ -n "$DS_FILE" ] && PHASE2_ARGS="$PHASE2_ARGS -f \"$DS_FILE\""
+{ [ "$DS_TYPE" = "file" ] || [ "$DS_TYPE" = "folder" ]; } && [ -n "$DS_FILE" ] && PHASE2_ARGS="$PHASE2_ARGS -f \"$DS_FILE\""
 PHASE2_ARGS="$PHASE2_ARGS -d $DATATYPE"
 [ "$OUTPUT_CSV" = "true" ] && [ -n "$OUTPUT_PATH" ] && PHASE2_ARGS="$PHASE2_ARGS -c -o \"$OUTPUT_PATH\""
 [ "$OUTPUT_BINARY" = "true" ] && [ -n "$OUTPUT_BIN_PATH" ] && PHASE2_ARGS="$PHASE2_ARGS -b -B \"$OUTPUT_BIN_PATH\""
 
+write_line '# ── app_trace/app_gendata: exec user command ──'
+write_line 'if [ "$BENCHMARK_TYPE" = "app_trace" ] || [ "$BENCHMARK_TYPE" = "app_gendata" ]; then'
+write_line '  echo "[bench] Launching app (Phase 2): $APP_COMMAND"'
+write_line '  # app_gendata: export dataset construction env vars'
+write_line '  if [ "$BENCHMARK_TYPE" = "app_gendata" ] && [ -n "$GENDATA_TARGETS" ]; then'
+write_line '    export PERF_GENDATA_TARGETS="$GENDATA_TARGETS"'
+write_line '    case "$OUTPUT_BIN_PATH" in'
+write_line '      /*) export PERF_GENDATA_OUTPUT_DIR="$OUTPUT_BIN_PATH" ;;'
+write_line '      *)  export PERF_GENDATA_OUTPUT_DIR="${BENCH_DIR}/${OUTPUT_BIN_PATH}" ;;'
+write_line '    esac'
+write_line '    export PERF_GENDATA_DONE_DIR="${BENCH_DIR}/daemon_signals"'
+write_line '  fi'
+write_line '  PHASE2_START=$(date +%s.%N)'
+write_line '  # ── Auto-detect launcher and forward env vars to remote nodes ──'
+write_line '  case "$APP_COMMAND" in'
+write_line '    *mpirun*)'
+write_line '      _X_ARGS=""'
+write_line '      for _v in $ENV_VAR_NAMES; do'
+write_line '        _X_ARGS="$_X_ARGS -x $_v"'
+write_line '      done'
+write_line '      # Also forward gendata env vars if set'
+write_line '      if [ "$BENCHMARK_TYPE" = "app_gendata" ] && [ -n "$GENDATA_TARGETS" ]; then'
+write_line '        for _v in PERF_GENDATA_TARGETS PERF_GENDATA_OUTPUT_DIR PERF_GENDATA_DONE_DIR; do'
+write_line '          _X_ARGS="$_X_ARGS -x $_v"'
+write_line '        done'
+write_line '      fi'
+write_line '      echo "[bench]   mpirun detected — auto-inserting env forwarding flags"'
+write_line '      eval "${APP_COMMAND/mpirun/mpirun $_X_ARGS}"'
+write_line '      ;;'
+write_line '    srun*)'
+write_line '      echo "[bench]   srun detected — env vars inherited by default"'
+write_line '      eval "$APP_COMMAND"'
+write_line '      ;;'
+write_line '    *)'
+write_line '      eval "$APP_COMMAND"'
+write_line '      ;;'
+write_line '  esac'
+write_line '  PHASE2_END=$(date +%s.%N)'
+write_line '  echo ""'
+write_line '  echo "--- Phase 2 app wall time: $(echo "$PHASE2_END - $PHASE2_START" | bc) seconds ---"'
+write_line 'else'
 write_line "$LAUNCH_CMD \$GDB_WRAPPER \\"
 write_line "    \"\$BENCH_DIR/bin/\${ARCH}/\${TEST_NAME}/\${TEST_NAME}\" $PHASE2_ARGS"
+write_line 'fi'
 
 write_line 'BENCH_RC2=$?'
 write_line 'echo ""'
@@ -721,9 +842,13 @@ emit_daemon_stop_block "$DAEMON_PHASE2_LIST" PHASE2_DAEMON_PIDS
 write_line 'BENCH_RC=$(( BENCH_RC1 > BENCH_RC2 ? BENCH_RC1 : BENCH_RC2 ))'
 write_line 'echo "============================================"'
 write_line "echo \" Benchmark $BENCHMARK_TYPE complete\""
-write_line 'echo "   Phase 1 (perf):  exit $BENCH_RC1"'
-write_line 'echo "   Phase 2 (perf round): exit $BENCH_RC2"'
-write_line 'echo "============================================"'
+write_line 'if [ "$BENCHMARK_TYPE" = "app_trace" ] || [ "$BENCHMARK_TYPE" = "app_gendata" ]; then'
+write_line '  echo "   Phase 1: exit $BENCH_RC1"'
+write_line '  echo "   Phase 2: exit $BENCH_RC2"'
+write_line 'else'
+write_line '  echo "   Phase 1 (perf):  exit $BENCH_RC1"'
+write_line '  echo "   Phase 2 (perf round): exit $BENCH_RC2"'
+write_line 'fi'
 write_line ""
 write_line 'exit $BENCH_RC'
 

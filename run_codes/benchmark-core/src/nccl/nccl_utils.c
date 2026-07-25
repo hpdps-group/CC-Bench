@@ -13,11 +13,13 @@
 #include <string.h>
 #include <stdarg.h>
 #include <unistd.h>
+#include <errno.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <dirent.h>
 
 /* Fixed path used for NCCL unique-ID bootstrap across processes */
 #define NCCL_ID_FILE "nccl_id_file/nccl_bench_id"
@@ -314,10 +316,93 @@ static void nccl_barrier_init(nccl_test_context_t *ctx)
 }
 
 
+/* ── Helper: load data from folder (each rank reads its own file) ─── */
+static void nccl_load_from_folder(const nccl_test_context_t *ctx, void *buf,
+                                   size_t msg_size)
+{
+    const char *folder = ctx->config.input_file;
+    const char *suffix_env = getenv("DS_SUFFIX");
+    const char *format_env = getenv("DS_FORMAT");
+    char path[1024];
+    char default_suffix[16] = "";
+
+    /* Determine suffix: explicit DS_SUFFIX, or infer from file_format */
+    const char *suffix = suffix_env;
+    if (!suffix || suffix[0] == '\0') {
+        if (format_env && strcasecmp(format_env, "text") == 0)
+            snprintf(default_suffix, sizeof(default_suffix), ".txt");
+        else
+            snprintf(default_suffix, sizeof(default_suffix), ".bin");
+        suffix = default_suffix;
+    }
+
+    /* Try rank_<id><suffix> first */
+    snprintf(path, sizeof(path), "%s/rank_%d%s", folder, ctx->rank, suffix);
+    FILE *fp = fopen(path, "rb");
+
+    /* Fallback: scan folder for any file starting with rank_<id> */
+    if (!fp) {
+        DIR *dir = opendir(folder);
+        if (!dir) {
+            fprintf(stderr, "Rank %d: cannot open folder '%s': %s\n",
+                    ctx->rank, folder, strerror(errno));
+            exit(1);
+        }
+        struct dirent *entry;
+        char prefix[64];
+        snprintf(prefix, sizeof(prefix), "rank_%d", ctx->rank);
+        int prefix_len = strlen(prefix);
+        char found[1024] = "";
+        while ((entry = readdir(dir)) != NULL) {
+            const char *name = entry->d_name;
+            if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
+                continue;
+            if (strncmp(name, prefix, prefix_len) != 0)
+                continue;
+            /* Ensure exact match: next char must be '.' or '\0' */
+            char after = name[prefix_len];
+            if (after != '.' && after != '\0')
+                continue;
+            snprintf(found, sizeof(found), "%s/%s", folder, name);
+            /* Warn if suffix differs */
+            if (suffix[0] && strcmp(name + prefix_len, suffix) != 0)
+                fprintf(stderr, "Rank %d: warning — expected '%s' but found '%s'\n",
+                        ctx->rank, path, found);
+            break;
+        }
+        closedir(dir);
+
+        if (found[0] == '\0') {
+            fprintf(stderr, "Rank %d: no file matching 'rank_%d*' in '%s'\n",
+                    ctx->rank, ctx->rank, folder);
+            exit(1);
+        }
+        fp = fopen(found, "rb");
+        if (!fp) {
+            fprintf(stderr, "Rank %d: failed to open '%s': %s\n",
+                    ctx->rank, found, strerror(errno));
+            exit(1);
+        }
+    }
+
+    /* Read file (up to msg_size) */
+    size_t got = fread(buf, 1, msg_size, fp);
+    fclose(fp);
+
+    if (got < msg_size)
+        memset((char *)buf + got, 0, msg_size - got);
+}
+
 void nccl_load_input(const nccl_test_context_t *ctx, void *buf,
                      size_t msg_size, ncclDataType_t datatype)
 {
     if (ctx->config.input_file) {
+        const char *ds_type = getenv("DS_TYPE");
+        if (ds_type && strcmp(ds_type, "folder") == 0) {
+            nccl_load_from_folder(ctx, buf, msg_size);
+            return;
+        }
+
         FILE *fp = fopen(ctx->config.input_file, "rb");
         if (!fp) {
             fprintf(stderr, "Rank %d: failed to open %s\n",

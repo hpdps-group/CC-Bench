@@ -10,6 +10,8 @@
 #include <math.h>
 #include <strings.h>
 #include <dlfcn.h>
+#include <dirent.h>
+#include <errno.h>
 #include "job_device_mapper.h"
 
 /* PMPI declarations */
@@ -87,9 +89,89 @@ void mpi_test_fini(const mpi_test_context_t *ctx) {
     PMPI_Finalize();
 }
 
+/* ── Helper: load data from folder (each rank reads its own file) ─── */
+static void mpi_load_from_folder(const mpi_test_context_t *ctx, void *buf,
+                                  size_t msg_size)
+{
+    const char *folder = ctx->config.input_file;
+    const char *suffix_env = getenv("DS_SUFFIX");
+    const char *format_env = getenv("DS_FORMAT");
+    char path[1024];
+    char default_suffix[16] = "";
+
+    /* Determine suffix: explicit DS_SUFFIX, or infer from file_format */
+    const char *suffix = suffix_env;
+    if (!suffix || suffix[0] == '\0') {
+        if (format_env && strcasecmp(format_env, "text") == 0)
+            snprintf(default_suffix, sizeof(default_suffix), ".txt");
+        else
+            snprintf(default_suffix, sizeof(default_suffix), ".bin");
+        suffix = default_suffix;
+    }
+
+    /* Try rank_<id><suffix> first */
+    snprintf(path, sizeof(path), "%s/rank_%d%s", folder, ctx->rank, suffix);
+    FILE *fp = fopen(path, "rb");
+
+    /* Fallback: scan folder for any file starting with rank_<id> */
+    if (!fp) {
+        DIR *dir = opendir(folder);
+        if (!dir) {
+            fprintf(stderr, "Rank %d: cannot open folder '%s': %s\n",
+                    ctx->rank, folder, strerror(errno));
+            PMPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+        }
+        struct dirent *entry;
+        char prefix[64];
+        snprintf(prefix, sizeof(prefix), "rank_%d", ctx->rank);
+        int prefix_len = strlen(prefix);
+        char found[1024] = "";
+        while ((entry = readdir(dir)) != NULL) {
+            const char *name = entry->d_name;
+            if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
+                continue;
+            if (strncmp(name, prefix, prefix_len) != 0)
+                continue;
+            char after = name[prefix_len];
+            if (after != '.' && after != '\0')
+                continue;
+            snprintf(found, sizeof(found), "%s/%s", folder, name);
+            if (suffix[0] && strcmp(name + prefix_len, suffix) != 0)
+                fprintf(stderr, "Rank %d: warning — expected '%s' but found '%s'\n",
+                        ctx->rank, path, found);
+            break;
+        }
+        closedir(dir);
+
+        if (found[0] == '\0') {
+            fprintf(stderr, "Rank %d: no file matching 'rank_%d*' in '%s'\n",
+                    ctx->rank, ctx->rank, folder);
+            PMPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+        }
+        fp = fopen(found, "rb");
+        if (!fp) {
+            fprintf(stderr, "Rank %d: failed to open '%s': %s\n",
+                    ctx->rank, found, strerror(errno));
+            PMPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+        }
+    }
+
+    size_t got = fread(buf, 1, msg_size, fp);
+    fclose(fp);
+
+    if (got < msg_size)
+        memset((char *)buf + got, 0, msg_size - got);
+}
+
 void mpi_load_input(const mpi_test_context_t *ctx, void *buf, size_t msg_size,
                     MPI_Datatype datatype) {
     if (ctx->config.input_file) {
+        const char *ds_type = getenv("DS_TYPE");
+        if (ds_type && strcmp(ds_type, "folder") == 0) {
+            mpi_load_from_folder(ctx, buf, msg_size);
+            return;
+        }
+
         FILE *fp = fopen(ctx->config.input_file, "rb");
         if (!fp) {
             fprintf(stderr, "Rank %d: Failed to open file %s\n",

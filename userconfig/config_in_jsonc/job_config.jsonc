@@ -1,14 +1,26 @@
 {
   /*
     Job Scheduling Configuration
-    job_choice: "slurm" — generates .slurm script, submit via sbatch
-                "srun"  — generates .srun.sh script, run with bash inside an salloc session
-                "local" — generates .sh script, run locally with mpirun (no scheduler)
+    job_choice: "slurm"  — generates .slurm script, submit via sbatch
+                "srun"   — generates .srun.sh script, run with bash inside an salloc session
+                "mpirun" — generates .mpirun.sh script, uses mpirun as launcher
+                           optional: see cross_alloc_nodes for cross-allocation mode
+                "local"  — generates .sh script, direct single-node execution (no launcher)
+
+    cross_alloc_nodes (optional):
+      When job_choice="mpirun" and this list is non-empty, the generated script
+      automatically builds a hostfile from the given node list, cleans SLURM
+      environment variables that would confuse mpirun, and launches with
+      --hostfile.  This enables running across independent interactive allocations.
+      Examples:
+        "cross_alloc_nodes": ["d1n41a12g02", "d1n41a26g02", "d1n41a18g01", "d1n41a14g01"]
 
     slurm.job:       SLURM SBATCH parameters (only applies when job_choice="slurm")
-    slurm.resources: Hardware resource requests (only applies when job_choice="slurm")
+    slurm.resources: Hardware resource requests
   */
-  "job_choice": "srun",
+  "job_choice": "mpirun",
+
+  "cross_alloc_nodes": ["d1n41a12g02","d1n41a26g02"],
 
   "slurm": {
     "job": {

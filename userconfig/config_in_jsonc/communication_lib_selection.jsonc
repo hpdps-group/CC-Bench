@@ -22,24 +22,18 @@
     See wrapper_code_examples/communication/zccl/ for a ZCCL example.
     Custom implementations should be placed in your_wrapper_code/communication/.
   */
-  "mode": 2,
+  "mode": 0,
 
-  "library_paths": ["plugin_projects/ccl/uccl/p2p/libuccl_p2p.so"],
+  "library_paths": ["plugin_projects/ccl/coccl/build/lib/libnccl.so"],
   "source_files": [],
 
-  "source_dirs": ["userconfig/wrapper_code_examples/communication/nccl_via_uccl"],
+  "source_dirs": [],
 
   "include_files": [],
 
-  "include_dirs": [
-    "plugin_projects/ccl/uccl/p2p",
-    "plugin_projects/ccl/uccl/p2p/include",
-    "plugin_projects/ccl/uccl/include",
-    "plugin_projects/ccl/uccl/thirdparty/dietgpu",
-    "/tmp/efa_stub/include"
-  ],
+  "include_dirs": [],
 
   "libraries": [],
 
-  "output_name": "libnccl_via_uccl.so"
+  "output_name": "libnccl.so"
 }

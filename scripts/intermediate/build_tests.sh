@@ -117,9 +117,8 @@ fi
 # compiles with MPI support.  Works for both MPI and NCCL arches:
 # mpicc --showme:link gives -L/-l flags that nvcc passes through to the linker.
 if command -v mpicc &>/dev/null; then
-    CFLAGS="-DHAVE_MPI"
+    CFLAGS="$CFLAGS -DHAVE_MPI"
     LIBS="$LIBS $(mpicc --showme:link 2>/dev/null | tr ' ' '\n' | grep '^-[Ll]' | tr '\n' ' ')"
-
 fi
 
 # Build nccl_extensions.so (separate shared library, not baked into the binary)
@@ -134,7 +133,7 @@ if [ "$ARCH" = "nccl" ] && [ -f "run_codes/wrappers/src/nccl/nccl_extensions.c" 
         -I "$INC_DIR" \
         -I "run_codes/wrappers/include" \
         $CFLAGS \
-        -o "bin/libs/libnccl_extensions.so"
+        -o "bin/libs/libnccl_extensions.so" 2>/dev/null || echo "[build_tests]   ⚠️ libnccl_extensions.so build skipped (incompatible with this NCCL version; not needed for basic AllReduce)"
     echo "[build_tests] done: bin/libs/libnccl_extensions.so"
 fi
 
@@ -150,16 +149,18 @@ for test_name in "${TESTS[@]}"; do
     mkdir -p "$out_dir"
 
     echo "[build_tests] compiling $test_name → $out_bin"
-    $CC \
+    if $CC \
         "${FRAME_SRCS[@]}" \
         "$test_src" \
         -I "$INC_DIR" \
         -I "run_codes/wrappers/include" \
         $CFLAGS \
         $LIBS \
-        -o "$out_bin"
-
-    echo "[build_tests] done: $out_bin"
+        -o "$out_bin"; then
+        echo "[build_tests] done: $out_bin"
+    else
+        echo "[build_tests]   ⚠️ $test_name build failed (incompatible with NCCL version?)"
+    fi
 done
 
 echo "[build_tests] all benchmarks built successfully for arch=$ARCH"

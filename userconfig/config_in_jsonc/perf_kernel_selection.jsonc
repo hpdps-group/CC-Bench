@@ -30,19 +30,19 @@
   */
   "mode": 3,
 
-  "library_paths": ["/path/to/libperf.so"],
+  "library_paths": [],
 
   "source_files": ["run_codes/wrappers/src/perf_helper.c",
-                  "run_codes/wrappers/src/nccl/perf_helper_nccl.c"],
+                   "run_codes/wrappers/src/mpi/perf_helper_mpi.c"],
 
-  "source_dirs": ["userconfig/wrapper_code_examples/perf/perfcoccl"],
+  "source_dirs": ["userconfig/wrapper_code_examples/perf/perfmpi"],
 
   "include_files": ["run_codes/wrappers/include/perf_helper.h",
-                    "run_codes/wrappers/include/nccl/perf_helper_nccl.h"],
+                    "run_codes/wrappers/include/mpi/perf_helper_mpi.h"],
 
-  "include_dirs": ["userconfig/wrapper_code_examples/perf/perfcoccl"],
+  "include_dirs": ["userconfig/wrapper_code_examples/perf/perfmpi"],
 
   "libraries": [],
 
-  "output_name": "libcoccl_perf.so"
+  "output_name": "libperfmpi.so"
 }

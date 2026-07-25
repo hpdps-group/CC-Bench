@@ -32,6 +32,7 @@
 #define CYCLE_SEC   0.100   /* 100 ms duty-cycle granularity       */
 #define BLOCKS      256     /* thread-blocks per kernel launch     */
 #define THREADS     256     /* threads per block                   */
+#define STRESS_BUF_BYTES (256 * 1024 * 1024)  /* 256 MB per GPU — exceeds L2 cache */
 
 /* ── Shared stop flag ──────────────────────────────────────────── */
 static volatile sig_atomic_t g_worker_stop = 0;
@@ -89,8 +90,8 @@ static void *worker_routine(void *arg)
         return NULL;
     }
 
-    /* Allocate device output buffer (one double per thread) */
-    w->d_out_size = (size_t)BLOCKS * THREADS * sizeof(double);
+    /* Allocate device output buffer (256 MB — exceeds L2 cache) */
+    w->d_out_size = (size_t)STRESS_BUF_BYTES;
     err = cudaMalloc(&w->d_out, w->d_out_size);
     if (err != cudaSuccess) {
         fprintf(stderr, "[stress_gpu %d] cudaMalloc failed: %s\n",

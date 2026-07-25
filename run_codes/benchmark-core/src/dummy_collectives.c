@@ -7,6 +7,80 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <strings.h>
+#include <dirent.h>
+#include <errno.h>
+
+/* ── Helper: load data from folder (each simulated rank reads its own file) ── */
+static void dummy_load_from_folder(const char *folder,
+                                    void *buf, size_t bytes,
+                                    int sim_rank)
+{
+    const char *suffix_env = getenv("DS_SUFFIX");
+    const char *format_env = getenv("DS_FORMAT");
+    char path[1024];
+    char default_suffix[16] = "";
+
+    const char *suffix = suffix_env;
+    if (!suffix || suffix[0] == '\0') {
+        if (format_env && strcasecmp(format_env, "text") == 0)
+            snprintf(default_suffix, sizeof(default_suffix), ".txt");
+        else
+            snprintf(default_suffix, sizeof(default_suffix), ".bin");
+        suffix = default_suffix;
+    }
+
+    snprintf(path, sizeof(path), "%s/rank_%d%s", folder, sim_rank, suffix);
+    FILE *fp = fopen(path, "rb");
+
+    if (!fp) {
+        DIR *dir = opendir(folder);
+        if (!dir) {
+            fprintf(stderr, "[dummy] cannot open folder '%s': %s\n",
+                    folder, strerror(errno));
+            exit(1);
+        }
+        struct dirent *entry;
+        char prefix[64];
+        snprintf(prefix, sizeof(prefix), "rank_%d", sim_rank);
+        int prefix_len = strlen(prefix);
+        char found[1024] = "";
+        while ((entry = readdir(dir)) != NULL) {
+            const char *name = entry->d_name;
+            if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
+                continue;
+            if (strncmp(name, prefix, prefix_len) != 0)
+                continue;
+            char after = name[prefix_len];
+            if (after != '.' && after != '\0')
+                continue;
+            snprintf(found, sizeof(found), "%s/%s", folder, name);
+            if (suffix[0] && strcmp(name + prefix_len, suffix) != 0)
+                fprintf(stderr, "[dummy] warning — expected '%s' but found '%s'\n",
+                        path, found);
+            break;
+        }
+        closedir(dir);
+
+        if (found[0] == '\0') {
+            fprintf(stderr, "[dummy] no file matching 'rank_%d*' in '%s'\n",
+                    sim_rank, folder);
+            exit(1);
+        }
+        fp = fopen(found, "rb");
+        if (!fp) {
+            fprintf(stderr, "[dummy] failed to open '%s': %s\n",
+                    found, strerror(errno));
+            exit(1);
+        }
+    }
+
+    size_t got = fread(buf, 1, bytes, fp);
+    fclose(fp);
+
+    if (got < bytes)
+        memset((char *)buf + got, 0, bytes - got);
+}
 
 /* ── Load one simulated rank's input ────────────────────────────── */
 
@@ -19,6 +93,12 @@ void dummy_load_rank_data(const char *input_file,
     (void)nranks;
 
     if (input_file) {
+        const char *ds_type = getenv("DS_TYPE");
+        if (ds_type && strcmp(ds_type, "folder") == 0) {
+            dummy_load_from_folder(input_file, buf, bytes, sim_rank);
+            return;
+        }
+
         FILE *fp = fopen(input_file, "rb");
         if (!fp) {
             fprintf(stderr, "[dummy] Error: cannot open '%s'\n", input_file);

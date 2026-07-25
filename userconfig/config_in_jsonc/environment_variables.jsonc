@@ -9,114 +9,15 @@
     - Compile-time options like architecture selection (mpi/nccl/rccl) go in bench_basic_config.jsonc.
   */
 
-  /* Communication lib / runtime environment variables */
-  /*
-  "NCCL_DEBUG": "INFO",
-  "NCCL_SOCKET_IFNAME": "eth0",
-  "CUDA_VISIBLE_DEVICES": "0,1,2,3",
-  "OMP_NUM_THREADS": "8",
-  */
-
   /* Wrapper general environment variables */
   "MPI_TOLERANCE": "1e-5",
   "MPI_BLOCK_SIZE": "1024",
-  /* "NCCL_DEBUG":"INFO",
-  "NCCL_DEBUG_SUBSYS": "NET",
-  "CUDA_LAUNCH_BLOCKING": "1",    */
 
   /* UCX / InfiniBand transport configuration */
   "UCX_TLS": "rc,self,sm",
   "UCX_NET_DEVICES": "mlx5_0:1",
 
-  /* Wrapper-specific environment variables — add as needed */
-  /* "SZ3_ABS_EB": "1e-6",
-   "SZ3_TYPE": "0",
-   "MPI_SZ3_LIB_PATH": "",
-   "MPI_ZFP_TOLERANCE": "1e-3",
-   "DIETGPU_DEVICE_ID": "0" */
-
-  /*
-    Allgatherv / Scatterv Weight Configuration
-
-    Data per rank is allocated proportionally by weight: base msg_size is multiplied by the weight.
-    Comma-separated, length must equal the number of processes.
-    If unset, falls back to uniform distribution (degenerates to standard Allgather/Scatter).
-
-    Example (4 processes, non-uniform distribution):
-     rank:       0     1     2     3
-                 ↓     ↓     ↓     ↓
-    ALLGATHERV_WEIGHTS = "1,1,2,4"
-    SCATTERV_WEIGHTS   = "4,2,1,1"
-    rank 3 receives 4/(1+1+2+4) = 50% of data, rank 0 receives 12.5%
-
-    Future extension (Alltoallv, etc.):
-    2D arrays flattened to comma strings, row-major order, length = size*size.
-    The parser parse_env_int_array() naturally supports arbitrary-length 1D expansion.
-  */
+  /* Allgatherv / Scatterv Weight Configuration — unused in app_trace, kept for schema compatibility */
   "ALLGATHERV_WEIGHTS": "1,2,3,4",
-  "SCATTERV_WEIGHTS": "4,3,2,1",
-
-  /* ================================================================
-     UCCL-collective Configuration
-
-     UCCL-collective (a.k.a. UCCL-Tran) is an NCCL NET plugin,
-     loaded via NCCL_NET_PLUGIN, no LD_PRELOAD needed.
-
-     Usage steps:
-       1. Build UCCL → produces libnccl-net-uccl.so
-       2. Set communication_lib_selection.jsonc mode=0 (bare, no LD_PRELOAD)
-       3. Set NCCL_NET_PLUGIN to point to libnccl-net-uccl.so
-       4. Use system NCCL (do NOT LD_PRELOAD COCCL)
-     ================================================================ */
-
-  /* ── UCCL NET Plugin path ────────────────────────────────────── */
-  "LD_LIBRARY_PATH": "bin/libs:$LD_LIBRARY_PATH",
-   "NCCL_NET_PLUGIN": "uccl",
-
-  /* ── UCCL HCA / control interface ──────────────────────────── */
-  //  "UCCL_DEBUG_VLOG_LEVEL": "1",
-  "UCCL_DEBUG":"ERROR",
-  "UCCL_DEBUG_SUBSYS": "ERROR", 
-  "UCCL_P2P_LOG_LEVEL": "ERROR",
-  "UCCL_P2P_COMPRESS_STRATEGY":"split_encode",
-  "UCCL_P2P_POLL_TIMEOUT_MS": "60000",
-  "UCCL_IB_HCA": "mlx5_0,mlx5_1,mlx5_4,mlx5_5",
-   "UCCL_SOCKET_IFNAME": "bond0",
-
-  /* ── UCCL tuning parameters (optional) ──────────────────────── */
-  /* "UCCL_CHUNK_SIZE_KB": "64" */
-  /* "UCCL_NUM_ENGINES": "4" */
-  /* "UCCL_PORT_ENTROPY": "32" */
-
-  /* ================================================================
-     COCCL compression configuration (currently disabled, using UCCL-collective instead)
-
-     To re-enable COCCL compression, uncomment the variables below and:
-       - Set communication_lib_selection.jsonc mode=1
-       - Point library_paths to coccl/build/lib/libnccl.so
-     ================================================================ */
-  /*
-  "NCCL_ENABLE_COMPRESS": "1",
-  "NCCL_COMPRESSORS": "tahquant:sdp4bit",
-  "NCCL_COMPRESSORS_LIB_PATH": "plugin_projects/ccl/coccl/build/obj/device/compress/libcompress",
-  "NCCL_COMPRESSORS_CONFIG_PATH": "plugin_projects/ccl/coccl/src/device/compress/configs",
-  "NCCL_ENABLE_ALLTOALL_COMPRESS": "1",
-  "NCCL_ALLTOALL_COMPRESSORS": "tahquant:sdp4bit",
-  "NCCL_ALLTOALL_INTER_COMPRESSORS": "tahquant:sdp4bit",
-  "NCCL_ENABLE_ALLREDUCE_COMPRESS": "1",
-  "NCCL_ALLREDUCE_COMPRESSORS": "tahquant:sdp4bit",
-  "NCCL_ALLREDUCE_INTER_COMPRESSORS": "tahquant:sdp4bit",
-  "NCCL_ENABLE_ALLGATHER_COMPRESS": "1",
-  "NCCL_ALLGATHER_COMPRESSORS": "tahquant:sdp4bit",
-  "NCCL_ALLGATHER_INTER_COMPRESSORS": "tahquant:sdp4bit",
-  "NCCL_ENABLE_REDUCESCATTER_COMPRESS": "1",
-  "NCCL_REDUCESCATTER_COMPRESSORS": "tahquant:sdp4bit",
-  "NCCL_REDUCESCATTER_INTER_COMPRESSORS": "tahquant:sdp4bit",
-  "NCCL_ENABLE_SENDRECV_COMPRESS": "1",
-  "NCCL_SENDRECV_COMPRESSORS": "tahquant",
-  "NCCL_SENDRECV_BWD_COMPRESSORS": "tahquant",
-  "NCCL_ENABLE_CHECK": "0",
-  "NCCL_ENABLE_TIMER": "0"
-  */
-  /* "COMPRESS_ENABLE_THRESHOLD": "1048576" */
+  "SCATTERV_WEIGHTS": "4,3,2,1"
 }

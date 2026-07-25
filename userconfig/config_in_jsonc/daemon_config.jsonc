@@ -13,9 +13,9 @@
     the build script will scan and compile them automatically.
   */
   "performance": {
-    "enabled": true,
-    "phase1_daemons": "",
-    "phase2_daemons": "",
+    "enabled": false,
+    "phase1_daemons": "gpu_nvidia",
+    "phase2_daemons": "gpu_nvidia,stress_gpu_nvidia",
     "poll_interval_sec": 0.5
   },
   "stress": {
@@ -36,7 +36,7 @@
       Requires NVIDIA driver and CUDA libraries (daemon_stress_gpu_nvidia.c needs -lcuda at compile time;
       register_daemons.sh will auto-detect and add it).
     */
-    "cpu_percent": 30,
-    "gpu_percent": 30
+    "cpu_percent": 0,
+    "gpu_percent": 60
   }
 }

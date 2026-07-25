@@ -286,6 +286,8 @@ int MPI_Allreduce(const void *sendbuf, void *recvbuf, int count,
             {"duration",   t1 - t0},
             {"data_bytes", (double)count * dtype_size},
         });
+    perf_gendata_dump_if_target(get_state(), "MPI_Allreduce",
+                                recvbuf, (size_t)count * dtype_size);
     return ret;
 }
 
@@ -308,6 +310,8 @@ int MPI_Bcast(void *buffer, int count, MPI_Datatype datatype,
             {"duration",   t1 - t0},
             {"data_bytes", (double)count * dtype_size},
         });
+    perf_gendata_dump_if_target(get_state(), "MPI_Bcast",
+                                buffer, (size_t)count * dtype_size);
     return ret;
 }
 
@@ -332,6 +336,8 @@ int MPI_Scatter(const void *sendbuf, int sendcount, MPI_Datatype sendtype,
             {"duration",   t1 - t0},
             {"data_bytes", (double)recvcount * dtype_size},
         });
+    perf_gendata_dump_if_target(get_state(), "MPI_Scatter",
+                                recvbuf, (size_t)recvcount * dtype_size);
     return ret;
 }
 
@@ -356,6 +362,8 @@ int MPI_Allgather(const void *sendbuf, int sendcount, MPI_Datatype sendtype,
             {"duration",   t1 - t0},
             {"data_bytes", (double)sendcount * dtype_size},
         });
+    perf_gendata_dump_if_target(get_state(), "MPI_Allgather",
+                                recvbuf, (size_t)sendcount * dtype_size);
     return ret;
 }
 
