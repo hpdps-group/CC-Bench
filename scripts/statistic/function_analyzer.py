@@ -1,4 +1,4 @@
-#!/usr/bin/env python2.7
+#!/usr/bin/env python
 """
 function_analyzer.py -- Analyze perf_function trace data.
 
@@ -59,7 +59,7 @@ def load_pingpong(path):
     """
     sums = {}
     counts = {}
-    with open(path, "rb") as f:
+    with open(path) as f:
         reader = csv.DictReader(f)
         for row in reader:
             try:
@@ -179,7 +179,7 @@ def analyze_rank(rank, args, pp_data, sizes_by_type):
 
     # Read CSV
     raw = []
-    with open(pf_path, "rb") as f:
+    with open(pf_path) as f:
         reader = csv.DictReader(f)
         for row in reader:
             raw.append(row)

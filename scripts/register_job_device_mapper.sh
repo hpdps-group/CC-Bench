@@ -34,8 +34,12 @@ DAEMON_CONFIG="userconfig/config_in_jsonc/daemon_config.jsonc"
 SELECTED_DAEMONS=""
 if [ -f "$DAEMON_CONFIG" ]; then
     # Extract the comma-separated list from "selected_daemons": "cpu, ib, ..."
-    SELECTED_DAEMONS=$(grep -i selected_daemons "$DAEMON_CONFIG" 2>/dev/null | head -1 | \
-                       sed 's/.*: *"\(.*\)".*/\1/')
+    # Match the quoted JSON key (not comment text that merely mentions it),
+    # then drop whitespace so the ",name," membership check below is exact.
+    # `|| true`: an absent key makes grep exit 1, which would abort the whole
+    # build under `set -euo pipefail` — an empty list is a valid config here.
+    SELECTED_DAEMONS=$(grep '"selected_daemons"' "$DAEMON_CONFIG" 2>/dev/null | head -1 | \
+                       sed 's/.*: *"\(.*\)".*/\1/' | tr -d ' ') || true
 fi
 
 # ---- Collect mapper files, check name collisions ----

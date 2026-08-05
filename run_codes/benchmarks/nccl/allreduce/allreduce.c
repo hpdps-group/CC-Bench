@@ -36,9 +36,27 @@ static void run_test_size(const nccl_test_context_t *ctx, size_t msg_size,
                     ctx->config.pattern_type,
                     count, ctx->size);
 
-    /* 3a. Allocate user accumulator for binary output */
+    /* 3. Warmup: absorb NCCL lazy init (connections / kernel JIT / compression
+     *    setup) BEFORE the timed loop. Without this, the first message size
+     *    pays the full cold-start cost and reports inflated latency.
+     *    Matches the pattern used by the other nccl benchmarks. */
+    for (int i = 0; i < ctx->config.warmup_iterations; i++) {
+        ncclResult_t _ret = ncclAllReduce(d_send, d_recv, count, datatype, op,
+                                          ctx->comm, ctx->stream);
+        if (_ret != ncclSuccess) {
+            fprintf(stderr, "[rank=%d] ncclAllReduce FAILED at size=%zu iter=%d "
+                            "error=%d — aborting\n",
+                    ctx->rank, bytes, i, (int)_ret);
+            exit(1);
+        }
+        cudaStreamSynchronize(ctx->stream);
+    }
+
+    /* 4. Allocate user accumulator for binary output */
     data_type_t dtype_gen = nccl_to_data_type(datatype);
     void *user_accum = ctx->config.save_binary ? calloc(1, bytes) : NULL;
+
+    /* 5. Main timing and validation loop */
 
     /* 4. Main timing and validation loop */
     float total_time_ms = 0.0f;

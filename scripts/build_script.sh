@@ -2,7 +2,9 @@
 # build_script.sh -- generate a benchmark workflow script from JSONC configs
 #
 # Usage: ./scripts/build_script.sh [--rebuild-bench]
-#   --rebuild-bench   Recompile benchmark binaries before generating the run script
+#   --rebuild-bench   Full rebuild via compile_all.sh (no args), then generate
+#                     the run script (equivalent to
+#                     compile_all.sh && build_script.sh)
 #   -> scripts/run/run_benchmark.slurm   (sbatch)
 #   -> scripts/run/run_benchmark.srun.sh (salloc terminal)
 #   -> scripts/run/run_benchmark.sh      (local single-node)
@@ -214,31 +216,26 @@ PYEOF
 echo "[build_script] Config parsed: arch=$ARCH, benchmark=$BENCHMARK_TYPE, job=$JOB_CHOICE"
 
 # ============================================================
-# Build wrapper libraries locally (before generating script)
-# ============================================================
-echo "[build_script] Building wrapper libraries..."
-for s in build_comm_wrapper build_comp_wrapper build_perf_wrapper; do
-    if [ -x "scripts/intermediate/${s}.sh" ]; then
-        "scripts/intermediate/${s}.sh"
-    else
-        echo "[build_script] WARNING: scripts/intermediate/${s}.sh not found"
-    fi
-done
-echo "[build_script] Wrapper libraries done"
-echo ""
-
-
-# ============================================================
-# Rebuild benchmark binaries (if --rebuild-bench was passed)
+# Build step
+#   --rebuild-bench: full rebuild via compile_all.sh (findso,
+#                    wrappers, validation.so, daemons, mapper,
+#                    benchmark binaries), then generate the run script
+#   (default)      : build wrapper libraries only, then generate
 # ============================================================
 if [ "$REBUILD_BENCH" = "true" ]; then
-    echo "[build_script] Rebuilding benchmarks for arch=$ARCH..."
-    if [ -x "scripts/intermediate/build_tests.sh" ]; then
-        "scripts/intermediate/build_tests.sh" "$ARCH"
-        echo "[build_script] Benchmark rebuild done"
-    else
-        echo "[build_script] WARNING: scripts/intermediate/build_tests.sh not found"
-    fi
+    echo "[build_script] Full rebuild: calling scripts/compile_all.sh ..."
+    scripts/compile_all.sh
+    echo ""
+else
+    echo "[build_script] Building wrapper libraries..."
+    for s in build_comm_wrapper build_comp_wrapper build_perf_wrapper; do
+        if [ -x "scripts/intermediate/${s}.sh" ]; then
+            "scripts/intermediate/${s}.sh"
+        else
+            echo "[build_script] WARNING: scripts/intermediate/${s}.sh not found"
+        fi
+    done
+    echo "[build_script] Wrapper libraries done"
     echo ""
 fi
 
@@ -271,6 +268,8 @@ if [ "$ARCH" = "mpi" ]; then
     LAUNCH_CMD="mpirun -np $NPROCS"
     if [ "$JOB_CHOICE" = "srun" ]; then
         LAUNCH_CMD="mpirun -np $NPROCS --hostfile \$LSF_HOSTFILE --map-by node"
+    elif [ "$JOB_CHOICE" = "mpirun" ] && [ -n "${CROSS_ALLOC_NODES:-}" ]; then
+        LAUNCH_CMD="mpirun --hostfile \$CROSS_HOSTFILE -np $NPROCS --map-by node --bind-to none -x LD_LIBRARY_PATH -x LD_PRELOAD"
     fi
 else
     case "$JOB_CHOICE" in
@@ -323,17 +322,23 @@ emit_daemon_start_block() {
     local list="$1"
     local pid_var="$2"
     write_line "if [ \"\$DAEMON_ENABLED\" = \"true\" ]; then"
+    write_line '  # mpirun -x forwards only SET vars; default it so the stress'
+    write_line '  # daemon always receives a value (0 = start immediately).'
+    write_line '  export STRESS_GPU_START_DELAY="${STRESS_GPU_START_DELAY:-0}"'
     write_line "  echo \"[bench] Starting daemons...\""
     write_line "  IFS=\",\" read -ra DAEMONS <<< \"$list\""
     write_line '  for daemon in "${DAEMONS[@]}"; do'
     write_line '    d=$(echo "$daemon" | xargs)'
     write_line '    [ -z "$d" ] && continue'
+    write_line '    # Clear any stale signal file (e.g. "EXIT" left over from a'
+    write_line '    # previous phase stop) so the daemon does NOT exit immediately.'
+    write_line '    rm -f "${BENCH_DIR}/daemon_signals/daemon_${d}.signal" 2>/dev/null || true'
     write_line '    if [ -x "$BENCH_DIR/bin/daemons/daemon_$d" ]; then'
     if [ "$JOB_CHOICE" = "slurm" ] || [ "$JOB_CHOICE" = "srun" ]; then
         write_line "      srun --nodes=\$NNODES --ntasks=\$NNODES --ntasks-per-node=1 --overlap \"\$BENCH_DIR/bin/daemons/daemon_\$d\" $DAEMON_INTERVAL &"
         write_line "      echo \"[bench]   daemon_\$d started via srun\""
     elif [ "$JOB_CHOICE" = "mpirun" ] && [ -n "${CROSS_ALLOC_NODES:-}" ]; then
-        write_line "      mpirun --hostfile \$CROSS_HOSTFILE -np \$NNODES --map-by node --bind-to none -x LD_LIBRARY_PATH -x LD_PRELOAD -x STRESS_CPU_PERCENT -x STRESS_GPU_PERCENT \"\$BENCH_DIR/bin/daemons/daemon_\$d\" $DAEMON_INTERVAL &"
+        write_line "      mpirun --hostfile \$CROSS_HOSTFILE -np \$NNODES --map-by node --bind-to none -x LD_LIBRARY_PATH -x LD_PRELOAD -x STRESS_CPU_PERCENT -x STRESS_GPU_PERCENT -x STRESS_GPU_START_DELAY \"\$BENCH_DIR/bin/daemons/daemon_\$d\" $DAEMON_INTERVAL &"
         write_line "      echo \"[bench]   daemon_\$d started via mpirun across \$NNODES nodes\""
     else
         write_line "      \"\$BENCH_DIR/bin/daemons/daemon_\$d\" $DAEMON_INTERVAL &"
@@ -529,6 +534,12 @@ write_line ""
 write_line "# Prepend library directories to LD_LIBRARY_PATH"
 write_line "LIB_DIRS=\"$LIB_DIRS\""
 write_line '[ -n "$LIB_DIRS" ] && export LD_LIBRARY_PATH="${LIB_DIRS}:${LD_LIBRARY_PATH}"'
+# Runtime environment variables must be exported BEFORE LD_PRELOAD is set.
+# A preloaded library (e.g. libzccl_comm_wrapper.so) may depend on a shared
+# object (e.g. libZCCL.so.1) living in one of these paths; if LD_LIBRARY_PATH
+# is not updated first, every tool invoked after LD_PRELOAD (mktemp, wc, ...)
+# fails with "cannot open shared object file".
+echo "$ENV_EXPORT_LINES" >> "$OUTPUT_SCRIPT"
 write_line ""
 write_line "# Generate hostfile from SLURM allocation (srun mode)"
 if [ "$JOB_CHOICE" = "srun" ]; then
@@ -648,14 +659,9 @@ write_line '  echo "[bench]   ready — mpirun will use --hostfile $CROSS_HOSTFI
 write_line 'fi'
 write_line ""
 
-# ============================================================
 # Step 4 -- Environment variables (applies to both phases)
-# ============================================================
-
-write_line "# Step 4 -- Export environment variables"
-write_line 'echo "[bench] Step 4: Setting environment variables..."'
-echo "$ENV_EXPORT_LINES" >> "$OUTPUT_SCRIPT"
-write_line 'echo ""'
+# Runtime env vars are exported near the top of the script (before LD_PRELOAD),
+# so that preloaded libraries' shared-object dependencies resolve.
 write_line ""
 
 # ============================================================

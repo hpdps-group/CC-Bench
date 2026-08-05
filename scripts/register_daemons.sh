@@ -72,6 +72,21 @@ if [ -n "$CUDA_HOME_CANDIDATE" ] && [ -f "$CUDA_HOME_CANDIDATE/include/cuda.h" ]
             fi
         done
     fi
+
+    # Also add the toolkit runtime lib dir so -lcudart (added to the daemon
+    # link below) resolves. Without -L the linker can't find libcudart even
+    # when the cuda module is loaded. The rpath embeds the cuda lib dir into
+    # the binary so the daemon ALSO finds libcudart at RUNTIME without needing
+    # LD_LIBRARY_PATH (the cuda module does not set it).
+    for lib_dir in \
+        "$CUDA_HOME_CANDIDATE/targets/x86_64-linux/lib" \
+        "$CUDA_HOME_CANDIDATE/lib64" \
+        "$CUDA_HOME_CANDIDATE/lib"; do
+        if [ -f "$lib_dir/libcudart.so" ]; then
+            CUDA_LIB="$CUDA_LIB -L$lib_dir -Wl,-rpath,$lib_dir"
+            break
+        fi
+    done
 fi
 
 DAEMON_GPU_KERNEL_OBJ=""

@@ -287,15 +287,26 @@ static void nccl_barrier_init(nccl_test_context_t *ctx)
         while (stat(BARRIER_ADDR_FILE, &st) != 0) {
             usleep(10000);
         }
-        /* Read address */
-        FILE *f = fopen(BARRIER_ADDR_FILE, "r");
-        if (!f) { perror("fopen barrier_addr for read"); exit(1); }
-        char host[256]; int port;
-        if (fscanf(f, "%255[^:]:%d", host, &port) != 2) {
+        /* Read address. RACE: rank 0's fopen() creates the file a moment
+         * before fprintf() writes the host:port, so a peer can observe an
+         * empty/partial file. Retry until the address parses (bounded, ~20s). */
+        char host[256]; int port = -1;
+        int ok = 0;
+        for (int tries = 0; tries < 2000 && !ok; tries++) {
+            FILE *f = fopen(BARRIER_ADDR_FILE, "r");
+            if (f) {
+                char tmp[512] = {0};
+                size_t n = fread(tmp, 1, sizeof(tmp) - 1, f);
+                fclose(f);
+                if (n > 0 && sscanf(tmp, "%255[^:]:%d", host, &port) == 2)
+                    ok = 1;
+            }
+            if (!ok) usleep(10000);
+        }
+        if (!ok) {
             fprintf(stderr, "barrier: failed to parse address\n");
             exit(1);
         }
-        fclose(f);
         /* Connect to rank 0 */
         struct hostent *he = gethostbyname(host);
         if (!he) { fprintf(stderr, "barrier: unknown host %s\n", host); exit(1); }

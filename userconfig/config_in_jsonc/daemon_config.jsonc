@@ -11,7 +11,18 @@
 
     Custom daemons should be placed in userconfig/your_daemons/;
     the build script will scan and compile them automatically.
+
+    selected_daemons: comma-separated list of daemons to BUILD.
+    compile_all.sh compiles ONLY these daemon executables (with the toolchain
+    chosen by communication_arch: mpi→gcc, nccl→nvcc, rccl→hipcc);
+    register_daemons.sh (standalone) still builds every daemon_*.c.
+    Each name must match userconfig/daemon_code_examples/daemon_<name>.c.
+
+    NOTE: stress_gpu_nvidia needs CUDA (cuda_runtime.h). It is NOT listed here
+    so the mpi arch (gcc) build does not fail; build it via register_daemons.sh
+    (nvcc-compiles the burn kernel) or switch communication_arch to nccl.
   */
+  "selected_daemons": "cpu, gpu_nvidia, ib, pcie, stress_cpu",
   "performance": {
     "enabled": false,
     "phase1_daemons": "gpu_nvidia",
