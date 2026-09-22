@@ -138,12 +138,71 @@ for entry in $FILES; do
     SRC="$SRC $src"
 done
 
+# ---- Auto-detect CUDA (for mappers that #include <cuda_runtime.h>) ----
+# A mapper calling cudaGetDevice() needs libcudart on the link line. Without
+# it the symbol stays undefined, and because the .so is opened with RTLD_LAZY
+# the failure does not show up at dlopen time — it aborts the benchmark on the
+# first call to map_job_to_device(). So resolve the toolkit up front and fail
+# the build loudly if it is needed but missing.
+CUDA_INC=""
+CUDA_LIB=""
+NEEDS_CUDA=false
+for s in $SRC; do
+    if grep -q 'cuda_runtime\.h' "$s" 2>/dev/null; then
+        NEEDS_CUDA=true
+        break
+    fi
+done
+
+if [ "$NEEDS_CUDA" = "true" ]; then
+    CUDA_HOME_CANDIDATE=""
+
+    # 1) Try nvcc location first
+    if command -v nvcc &>/dev/null; then
+        CUDA_HOME_CANDIDATE="$(dirname "$(dirname "$(command -v nvcc)")")"
+    fi
+    # 2) Fallback: common installation roots
+    if [ -z "$CUDA_HOME_CANDIDATE" ] || [ ! -f "$CUDA_HOME_CANDIDATE/include/cuda_runtime.h" ]; then
+        for cuda_root in /usr/local/cuda /usr/lib/cuda /opt/cuda; do
+            if [ -f "$cuda_root/include/cuda_runtime.h" ]; then
+                CUDA_HOME_CANDIDATE="$cuda_root"
+                break
+            fi
+        done
+    fi
+
+    if [ -z "$CUDA_HOME_CANDIDATE" ] || [ ! -f "$CUDA_HOME_CANDIDATE/include/cuda_runtime.h" ]; then
+        echo "register_job_device_mapper.sh: error: a selected mapper #includes <cuda_runtime.h>," >&2
+        echo "  but no CUDA toolkit was found (looked next to nvcc and in" >&2
+        echo "  /usr/local/cuda, /usr/lib/cuda, /opt/cuda)." >&2
+        echo "  Load the cuda module, or drop the CUDA mapper from selected_daemons." >&2
+        exit 1
+    fi
+
+    CUDA_INC="-I$CUDA_HOME_CANDIDATE/include"
+    CUDA_LIB="-lcudart"
+
+    # Resolve libcudart and embed its dir in the rpath so the .so ALSO finds it
+    # at RUNTIME without LD_LIBRARY_PATH (the cuda module does not set it).
+    for lib_dir in \
+        "$CUDA_HOME_CANDIDATE/targets/x86_64-linux/lib" \
+        "$CUDA_HOME_CANDIDATE/lib64" \
+        "$CUDA_HOME_CANDIDATE/lib"; do
+        if [ -f "$lib_dir/libcudart.so" ]; then
+            CUDA_LIB="-L$lib_dir -Wl,-rpath,$lib_dir -lcudart"
+            break
+        fi
+    done
+fi
+
 echo "register_job_device_mapper.sh: compiling bin/libs/libjob_device_mapper.so ..." >&2
 gcc -O3 -Wall -Wextra -D_GNU_SOURCE \
     -I./run_codes/benchmark-core/include \
+    $CUDA_INC \
     -fPIC -shared \
     $SRC \
     -o bin/libs/libjob_device_mapper.so \
-    -lm -ldl
+    -lm -ldl \
+    $CUDA_LIB
 
 echo "register_job_device_mapper.sh: done — bin/libs/libjob_device_mapper.so" >&2
